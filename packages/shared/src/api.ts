@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/flood-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Flood Reports */
+        get: operations["list_flood_reports_api_flood_reports_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gauges": {
         parameters: {
             query?: never;
@@ -180,6 +197,28 @@ export interface components {
             /** Event */
             event: string;
             severity: components["schemas"]["FloodSeverity"];
+        };
+        /** FloodReport */
+        FloodReport: {
+            /**
+             * Id
+             * @description Database bigint represented as a string for JS precision.
+             */
+            id: string;
+            /** Location Name */
+            location_name?: string | null;
+            /** Latitude */
+            latitude?: number | null;
+            /** Longitude */
+            longitude?: number | null;
+            /** Water Depth Inches */
+            water_depth_inches?: number | null;
+            /** Severity */
+            severity?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Reported At */
+            reported_at?: string | null;
         };
         /**
          * FloodSeverity
@@ -593,6 +632,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FloodZone"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_flood_reports_api_flood_reports_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FloodReport"][];
                 };
             };
             /** @description Validation Error */

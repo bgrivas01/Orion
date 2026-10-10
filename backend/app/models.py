@@ -122,6 +122,17 @@ class FloodZoneSummary(BaseModel):
     )
 
 
+class FloodReport(BaseModel):
+    id: str = Field(..., description="Database bigint represented as a string for JS precision.")
+    location_name: str | None = None
+    latitude: float | None = Field(None, ge=-90, le=90)
+    longitude: float | None = Field(None, ge=-180, le=180)
+    water_depth_inches: float | None = None
+    severity: str | None = None
+    description: str | None = None
+    reported_at: datetime | None = None
+
+
 # --------------------------------------------------------------------------- #
 # Routing
 # --------------------------------------------------------------------------- #

@@ -4,6 +4,19 @@
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE EXTENSION IF NOT EXISTS postgis;
 
+-- Community observations: compatible with bloodproject/app.py's existing table.
+-- Existing reports are retained; this only provisions fresh databases.
+CREATE TABLE IF NOT EXISTS public.flood_reports (
+    id BIGSERIAL PRIMARY KEY,
+    location_name TEXT,
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
+    water_depth_inches NUMERIC,
+    severity TEXT,
+    description TEXT,
+    reported_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- --------------------------------------------------------------------------- --
 -- Gauge metadata (static, seeded from USGS + NWS flood-stage tables)
 -- --------------------------------------------------------------------------- --

@@ -1,11 +1,12 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   orderRoutes,
   quickestDuration,
   type FloodZone,
+  type FloodReport,
   type Gauge,
   type LatLng,
   type Place,
@@ -14,6 +15,7 @@ import {
 } from "@orion/shared";
 import PlaceSearch from "../components/PlaceSearch";
 import RouteCard from "../components/RouteCard";
+import FloodReports from "../components/FloodReports";
 import { api } from "../lib/client";
 
 // MapLibre touches `window` on import, so it cannot be server-rendered.
@@ -39,6 +41,36 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [floodZones, setFloodZones] = useState<FloodZone[]>([]);
   const [gauges, setGauges] = useState<Gauge[]>([]);
+  const [floodReports, setFloodReports] = useState<FloodReport[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(true);
+  const [reportsError, setReportsError] = useState<string | null>(null);
+  const reportsRequest = useRef(0);
+
+  const refreshReports = useCallback(async () => {
+    const request = ++reportsRequest.current;
+    setReportsLoading(true);
+    try {
+      const reports = await api.floodReports();
+      if (request !== reportsRequest.current) return;
+      setFloodReports(reports);
+      setReportsError(null);
+    } catch (e) {
+      if (request !== reportsRequest.current) return;
+      setFloodReports([]);
+      setReportsError(e instanceof Error ? e.message : "Could not load flood reports.");
+    } finally {
+      if (request === reportsRequest.current) setReportsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshReports();
+    const timer = window.setInterval(() => void refreshReports(), 60_000);
+    return () => {
+      window.clearInterval(timer);
+      reportsRequest.current++;
+    };
+  }, [refreshReports]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -208,6 +240,8 @@ export default function Home() {
             </p>
           )}
         </div>
+        <FloodReports reports={floodReports} loading={reportsLoading}
+          error={reportsError} onRefresh={() => void refreshReports()} />
       </aside>
 
       {/* ------------------------------------------------------------- map -- */}
@@ -217,6 +251,7 @@ export default function Home() {
           selectedId={selectedId}
           floodZones={floodZones}
           gauges={gauges}
+          floodReports={floodReports}
           origin={origin}
           destination={destination}
           onSelect={setSelectedId}

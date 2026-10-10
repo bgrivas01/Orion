@@ -11,6 +11,7 @@ import {
   bandStyle,
   formatDistance,
   type FloodZone,
+  type FloodReport,
   type Gauge,
   type LatLng,
   type RouteCandidate,
@@ -27,6 +28,7 @@ interface Props {
   selectedId: string | null;
   floodZones: FloodZone[];
   gauges: Gauge[];
+  floodReports: FloodReport[];
   origin: LatLng | null;
   destination: LatLng | null;
   onSelect: (id: string) => void;
@@ -37,6 +39,7 @@ export default function MapView({
   selectedId,
   floodZones,
   gauges,
+  floodReports,
   origin,
   destination,
   onSelect,
@@ -202,6 +205,38 @@ export default function MapView({
       ready.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const markers = floodReports.flatMap((report) => {
+      if (report.latitude == null || report.longitude == null) return [];
+      const element = document.createElement("div");
+      element.style.cssText = "width:14px;height:14px;background:#eb6834;border:2px solid #fcfcfb;border-radius:2px;";
+      const details = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = report.location_name || "Flood report";
+      details.append(title);
+      const observation = document.createElement("p");
+      observation.textContent = `${report.severity || "Severity unknown"} · ${
+        report.water_depth_inches == null ? "Depth unknown" : `${report.water_depth_inches} inches`}`;
+      details.append(observation);
+      if (report.description) {
+        const description = document.createElement("p");
+        description.textContent = report.description;
+        details.append(description);
+      }
+      const time = document.createElement("p");
+      time.textContent = report.reported_at
+        ? new Date(report.reported_at).toLocaleString() : "Report time unknown";
+      details.append(time);
+      const popup = new maplibregl.Popup({ offset: 12 }).setDOMContent(details);
+      const marker = new maplibregl.Marker({ element })
+        .setLngLat([report.longitude, report.latitude]).setPopup(popup).addTo(m);
+      return [{ marker, popup }];
+    });
+    return () => markers.forEach(({ marker, popup }) => { popup.remove(); marker.remove(); });
+  }, [floodReports]);
 
   /* ------------------------------------------------------------ flood data -- */
   useEffect(() => {

@@ -26,6 +26,7 @@ export type ElevationPoint = S["ElevationPoint"];
 
 export type FloodZone = S["FloodZone"];
 export type FloodZoneSummary = S["FloodZoneSummary"];
+export type FloodReport = S["FloodReport"];
 export type Gauge = S["Gauge"];
 export type GaugeReading = S["GaugeReading"];
 
@@ -290,6 +291,9 @@ export function createClient(baseUrl: string) {
 
     floodZones: (bbox?: string) =>
       request<FloodZone[]>(`/api/flood-zones${bbox ? `?bbox=${encodeURIComponent(bbox)}` : ""}`),
+
+    floodReports: (limit = 100) =>
+      request<FloodReport[]>(`/api/flood-reports?limit=${limit}`),
 
     gauges: (bbox?: string) =>
       request<Gauge[]>(`/api/gauges${bbox ? `?bbox=${encodeURIComponent(bbox)}` : ""}`),

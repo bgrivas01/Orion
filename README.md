@@ -128,6 +128,25 @@ and the clear one must rank better. It rolls back everything it writes.
 
 ## Data sources
 
+### Community flood reports (bloodproject integration)
+
+`GET /api/flood-reports?limit=100` reads the existing `public.flood_reports`
+table using the backend's `DATABASE_URL`. The web app shows the latest 100
+reports in a list and plots reports with coordinates as square map markers.
+It refreshes every minute and offers a manual refresh. Reports include the
+location, reported water depth in inches, original severity, description and
+timestamp. They are observations, and do not currently change route scores or
+verified flood-zone avoidance. Check the timestamp before relying on a report.
+
+Set `DATABASE_URL` in `backend/.env` to the same Tiger Cloud connection used by
+`bloodproject/app.py`; keep it out of Git. No `psycopg` dependency is needed:
+Orion reuses its asynchronous connection pool. Fresh databases receive a
+compatible table; existing rows are preserved. Fixture mode returns no reports.
+An unavailable database produces an explicit unavailable state in the web app.
+
+The Python scripts for MNIST and superconductor analysis are unrelated to these
+reports and are not required by Orion.
+
 | Source | Use | Key? |
 |---|---|---|
 | OpenRouteService | routing (+3D elevation in the same call), geocoding | yes, free |

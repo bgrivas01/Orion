@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import db
 from .config import get_settings
-from .routers import alerts, flood_zones, gauges, geocode, health, routes
+from .routers import alerts, flood_reports, flood_zones, gauges, geocode, health, routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +73,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(routes.router)
 app.include_router(flood_zones.router)
+app.include_router(flood_reports.router)
 app.include_router(gauges.router)
 app.include_router(geocode.router)
 app.include_router(alerts.router)
