@@ -1,0 +1,20 @@
+node_modules/
+.next/
+out/
+dist/
+.expo/
+.env
+.env.local
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.tsbuildinfo
+next-env.d.ts
+# npm workspaces: only the root lockfile is authoritative
+web/package-lock.json
+mobile/package-lock.json
+packages/*/package-lock.json

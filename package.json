@@ -1,0 +1,16 @@
+{
+  "name": "orion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Flood-aware safest-route routing — web, mobile and shared contract.",
+  "workspaces": [
+    "web",
+    "mobile",
+    "packages/*"
+  ],
+  "scripts": {
+    "types": "npm run generate -w @orion/shared",
+    "web": "npm run dev -w web",
+    "mobile": "npm run start -w mobile"
+  }
+}
