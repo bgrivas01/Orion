@@ -69,6 +69,7 @@ class ExposureHit:
     severity: FloodSeverity
     length_m: float
     geometry: LineString | None = None
+    source: str = "unknown"
 
 
 @dataclass
@@ -226,7 +227,7 @@ def score(
         approach_margin=round(approach, 2),
         total=round(total, 2),
     )
-    return breakdown, band_for(total, bool(hits))
+    return breakdown, band_for(total, any(h.source != "nws" for h in hits))
 
 
 # --------------------------------------------------------------------------- #
@@ -238,16 +239,16 @@ WITH route AS (
     SELECT ST_Force2D(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)) AS geom
 ),
 zones AS (
-    SELECT id, event, severity, geom
+    SELECT id, source, event, severity, geom
     FROM flood_zones
     WHERE expires IS NULL OR expires > now()
 ),
 hits AS (
-    SELECT z.id, z.event, z.severity, ST_Intersection(r.geom, z.geom) AS geom
+    SELECT z.id, z.source, z.event, z.severity, ST_Intersection(r.geom, z.geom) AS geom
     FROM route r
     JOIN zones z ON ST_Intersects(r.geom, z.geom)
 )
-SELECT h.id, h.event, h.severity,
+SELECT h.id, h.source, h.event, h.severity,
        ST_AsGeoJSON(d.geom)            AS seg,
        ST_Length(d.geom::geography)    AS len_m
 FROM hits h,
@@ -301,12 +302,15 @@ async def assess(conn: asyncpg.Connection, geometry: LineString) -> Assessment:
 
     # --- flood exposure: the authoritative avoidance check ------------------ #
     hits: list[ExposureHit] = []
+    nws_warning = False
     segments: list[FlaggedSegment] = []
     for row in await conn.fetch(_EXPOSURE_SQL, geojson):
+        nws_warning |= row["source"] == "nws"
         severity = _severity(row["severity"])
         hits.append(
             ExposureHit(
                 zone_id=row["id"],
+                source=row["source"],
                 event=row["event"],
                 severity=severity,
                 length_m=float(row["len_m"]),
@@ -354,8 +358,12 @@ async def assess(conn: asyncpg.Connection, geometry: LineString) -> Assessment:
         total_m = sum(h.length_m for h in hits)
         events = sorted({h.event for h in hits})
         warnings.append(
-            f"Crosses {', '.join(events)} for {total_m / 1000:.1f} km — do not drive this."
+            f"Intersects {', '.join(events)} for {total_m / 1000:.1f} km. Check current local road conditions."
         )
+    if nws_warning:
+        warnings.append("NWS polygons describe warning areas, not confirmed flooded roads. Road passability is unknown; never drive through observed floodwater.")
+        # Keep conservative exposure scoring, without equating an alert overlap
+        # with observed water on a road.
     flooded_gauges = [g for g in gauges if g.at_flood_stage]
     if flooded_gauges:
         warnings.append(

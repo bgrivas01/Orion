@@ -184,7 +184,7 @@ class RouteCandidate(BaseModel):
         description=(
             "True only if we confirmed in PostGIS that the returned geometry is clear of "
             "all active flood zones. ORS avoid_polygons is unreliable, so this is the "
-            "authoritative field — never trust avoidance_requested alone."
+            "polygon-overlap check, not proof of road passability or observed flooding."
         ),
     )
     warnings: list[str] = []

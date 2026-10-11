@@ -35,10 +35,38 @@ class ORSRateLimited(ORSUnavailable):
     """Upstream quota or rate limit exhausted (429)."""
 
 
+class ORSLocationError(ORSError):
+    """A selected point cannot be connected to the routing network."""
+
+
+class ORSNoRoute(ORSError):
+    """The provider could not connect the selected locations."""
+
+
+def error_code(response: httpx.Response) -> int | None:
+    try:
+        body = response.json()
+        error = body.get("error") if isinstance(body, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        return code if type(code) is int else None
+    except ValueError:
+        return None
+
+
 def response_data(response: httpx.Response, service: str) -> dict[str, Any]:
     """Do not expose response bodies or request URLs, which may contain secrets."""
     status = response.status_code
     prefix = f"ORS {service}"
+    code = error_code(response)
+    if service == "routing" and status in (400, 404):
+        if code == 2010:
+            raise ORSLocationError("ORS routing: a selected location is not near a routable road (2010). Select a public-road entrance instead of a campus or airport centre.")
+        if code == 2009:
+            raise ORSNoRoute("ORS routing: no connected route was found (2009). Check public-road entrances and access restrictions, or choose different locations.")
+        if code == 2004:
+            raise ORSError("ORS routing: request exceeds a provider limit (2004). The unmodified Fastest candidate is evaluated separately.")
+        if status == 404:
+            raise ORSError("ORS routing: unclassified upstream 404. Check the routing endpoint and sanitized diagnostic code; this does not establish a location or avoidance failure.")
     if status == 401:
         raise ORSCredentialsError(f"{prefix}: invalid or missing API credentials (401). Check the server-side ORS_API_KEY.")
     if status == 403:
@@ -88,6 +116,12 @@ async def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     except httpx.HTTPError as exc:
         raise ORSUnavailable("ORS routing service could not be reached") from exc
 
+    log.info(
+        "ORS directions status=%d code=%s profile=%s avoidance=%s point_count=%d",
+        r.status_code, error_code(r),
+        path.split("/")[3] if path.split("/")[3] in ("driving-car", "cycling-regular", "foot-walking") else "other",
+        bool(payload.get("options", {}).get("avoid_polygons")), len(payload.get("coordinates", [])),
+    )
     return response_data(r, "routing")
 
 
@@ -115,7 +149,7 @@ async def directions(
 
     features = data.get("features") or []
     if not features:
-        raise ORSError("ORS returned no route")
+        raise ORSNoRoute("ORS routing returned no route. Choose public-road entrances or different locations.")
 
     feature = features[0]
     geometry = feature.get("geometry") or {}
