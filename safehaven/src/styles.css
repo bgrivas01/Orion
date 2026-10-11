@@ -76,3 +76,28 @@
  .danger-inner { max-width:540px; }
 }
 @media(min-width:900px) and (max-width:1100px) { .app-shell { padding-left:200px; } .app-header,.tab-bar { width:200px; } .brand { font-size:19px; } .page,.desktop-context { padding-left:28px; padding-right:28px; } .map-page { grid-template-columns:minmax(0,1fr) 290px; } }
+/* Orion integration keeps SafeHaven visual tokens and navigation. */
+.orion-status { margin:20px 0; font-size:13px; }
+.orion-status p + p { margin-top:8px; }
+.orion-routing-grid { display:grid; gap:20px; min-width:0; }
+.orion-controls { display:flex; flex-direction:column; gap:18px; }
+.orion-place-search { position:relative; }
+.orion-place-search input { width:100%; min-height:48px; padding:10px; background:var(--card); border:1px solid var(--border); border-radius:12px; }
+.orion-place-search ul { max-height:220px; overflow:auto; padding:8px; background:var(--card); border:1px solid var(--border); border-radius:12px; }
+.orion-place-search ul button { padding:12px; width:100%; text-align:left; }
+.orion-preferences { display:flex; gap:12px; flex-wrap:wrap; }
+.orion-preferences legend { margin-bottom:8px; }
+.orion-map { height:380px; width:100%; border-radius:20px; }
+.orion-map-wrap { min-width:0; }
+.orion-map-wrap > p { font-size:12px; margin-top:10px; }
+.orion-map .maplibregl-popup-content { color:#18251f; max-width:280px; }
+.orion-results { margin-top:24px; }
+.orion-results > p { margin-bottom:12px; }
+.orion-route-cards { display:grid; gap:16px; margin-top:20px; }
+.orion-route-cards p, .orion-results .warning-panel p { margin:10px 0; font-size:13px; }
+.orion-selected { outline:2px solid var(--primary); }
+@media(min-width:900px) {
+ .orion-routing-grid { grid-template-columns:320px minmax(0,1fr); }
+ .orion-map { height:540px; }
+ .orion-route-cards { grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
+}
