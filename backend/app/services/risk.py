@@ -90,6 +90,15 @@ class Assessment:
     max_elevation_m: float | None = None
     warnings: list[str] = field(default_factory=list)
     clear_of_flooding: bool = True
+    route_length_m: float = 0
+    warning_exposure_m: float = 0
+    warning_exposure_percent: float = 0
+    warning_severity_m: dict[str, float] = field(default_factory=dict)
+    hazard_exposure_m: float = 0
+    initial_warning_exit_m: float = 0
+    warning_reentries: int = 0
+    warning_intersection: bool = False
+    hazard_intersection: bool = False
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -106,7 +115,11 @@ def flood_exposure_score(hits: list[ExposureHit]) -> float:
     weighted = sum(h.length_m * SEVERITY_WEIGHT.get(h.severity, 0.6) for h in hits)
     if weighted <= 0:
         return 0.0
-    return max(EXPOSURE_FLOOR, 50.0 * _clamp(weighted / EXPOSURE_SATURATION_M))
+    if any(h.source != "nws" for h in hits):
+        return max(EXPOSURE_FLOOR, 50.0 * _clamp(weighted / EXPOSURE_SATURATION_M))
+    # Smooth display score; exact severity distances, not this compressed score,
+    # drive Safest ranking. No 2-km plateau for precautionary warnings.
+    return 50.0 * weighted / (weighted + 10_000.0)
 
 
 def basin_depths(elevations: list[float]) -> list[float]:
@@ -219,7 +232,7 @@ def score(
     gauge = gauge_proximity_score(gauges)
     approach = approach_margin_score(nearest_zone_m)
 
-    total = _clamp(exposure + low_lying + gauge + approach, 0.0, 100.0)
+    total = _clamp(sum(round(v,2) for v in (exposure,low_lying,gauge,approach)), 0.0, 100.0)
     breakdown = RiskBreakdown(
         flood_exposure=round(exposure, 2),
         low_lying=round(low_lying, 2),
@@ -236,33 +249,57 @@ def score(
 
 _EXPOSURE_SQL = """
 WITH route AS (
-    SELECT ST_Force2D(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)) AS geom
-),
-zones AS (
-    SELECT id, source, event, severity, geom
-    FROM flood_zones
-    WHERE expires IS NULL OR expires > now()
-),
-hits AS (
-    SELECT z.id, z.source, z.event, z.severity, ST_Intersection(r.geom, z.geom) AS geom
-    FROM route r
-    JOIN zones z ON ST_Intersects(r.geom, z.geom)
+ SELECT ST_Force2D(ST_SetSRID(ST_GeomFromGeoJSON($1),4326)) geom
+), raw_edges AS (
+ SELECT d.path[1] edge, d.geom, ST_Length(d.geom::geography) edge_m
+ FROM route, LATERAL ST_DumpSegments(route.geom) d
+ WHERE ST_Length(d.geom)>0
+), edges AS (
+ SELECT *, COALESCE(SUM(edge_m) OVER (ORDER BY edge ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0) start_m
+ FROM raw_edges
+), zones AS (
+ SELECT CASE WHEN source='nws' THEN 'nws' ELSE 'hazard' END source,
+        CASE WHEN severity IN ('extreme','severe','moderate','minor') THEN severity ELSE 'unknown' END severity,
+        CASE severity WHEN 'extreme' THEN 5 WHEN 'severe' THEN 4
+             WHEN 'moderate' THEN 3 WHEN 'minor' THEN 1 ELSE 2 END rank,
+        ST_MakeValid(geom) geom
+ FROM flood_zones
+ WHERE (expires IS NULL OR expires > now())
+ AND ST_Intersects(geom,(SELECT geom FROM route))
+), dissolved AS (
+ SELECT source,severity,rank,ST_UnaryUnion(ST_Collect(geom)) geom
+ FROM zones GROUP BY source,severity,rank
+), exclusive AS (
+ SELECT z.source,z.severity,z.rank,
+ ST_Difference(z.geom,COALESCE((SELECT ST_UnaryUnion(ST_Collect(h.geom))
+ FROM dissolved h WHERE h.source=z.source AND h.rank>z.rank),
+ ST_GeomFromText('POLYGON EMPTY',4326))) geom FROM dissolved z
+), pieces AS (
+ SELECT e.edge,e.geom edge_geom,e.edge_m,e.start_m,z.source,z.severity,
+        (ST_Dump(ST_CollectionExtract(ST_Intersection(e.geom,z.geom),2))).geom geom
+ FROM edges e JOIN exclusive z ON ST_Intersects(e.geom,z.geom)
+), measured AS (
+ SELECT *, LEAST(ST_LineLocatePoint(edge_geom,ST_StartPoint(geom)),
+                 ST_LineLocatePoint(edge_geom,ST_EndPoint(geom))) lo,
+           GREATEST(ST_LineLocatePoint(edge_geom,ST_StartPoint(geom)),
+                    ST_LineLocatePoint(edge_geom,ST_EndPoint(geom))) hi
+ FROM pieces
 )
-SELECT h.id, h.source, h.event, h.severity,
-       ST_AsGeoJSON(d.geom)            AS seg,
-       ST_Length(d.geom::geography)    AS len_m
-FROM hits h,
-     LATERAL ST_Dump(h.geom) d
-WHERE ST_GeometryType(d.geom) = 'ST_LineString'
-  AND ST_Length(d.geom::geography) > 1
+SELECT source || ':' || severity id,source,severity,
+       CASE WHEN source='nws' THEN 'NWS warning area' ELSE 'Hazard area' END event,
+       ST_AsGeoJSON(geom) seg,(hi-lo)*edge_m len_m,edge,lo,hi,edge_m,start_m,
+       (SELECT SUM(edge_m) FROM edges) route_m
+FROM measured WHERE hi>lo
+ORDER BY edge,lo
 """
 
 _NEAREST_SQL = """
-SELECT MIN(ST_Distance(
-           ST_Force2D(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326))::geography,
-           geom::geography
-       ))
-FROM flood_zones
+WITH route AS (SELECT ST_Force2D(ST_SetSRID(ST_GeomFromGeoJSON($1),4326)) geom)
+SELECT json_build_object(
+ 'nearest', MIN(ST_Distance(route.geom::geography,flood_zones.geom::geography)),
+ 'warning_intersection', COALESCE(bool_or(source='nws' AND ST_Intersects(route.geom,flood_zones.geom)),false),
+ 'hazard_intersection', COALESCE(bool_or(source IS DISTINCT FROM 'nws' AND ST_Intersects(route.geom,flood_zones.geom)),false))
+FROM flood_zones CROSS JOIN route
 WHERE expires IS NULL OR expires > now()
 """
 
@@ -304,7 +341,8 @@ async def assess(conn: asyncpg.Connection, geometry: LineString) -> Assessment:
     hits: list[ExposureHit] = []
     nws_warning = False
     segments: list[FlaggedSegment] = []
-    for row in await conn.fetch(_EXPOSURE_SQL, geojson):
+    exposure_rows = await conn.fetch(_EXPOSURE_SQL, geojson)
+    for row in exposure_rows:
         nws_warning |= row["source"] == "nws"
         severity = _severity(row["severity"])
         hits.append(
@@ -329,7 +367,12 @@ async def assess(conn: asyncpg.Connection, geometry: LineString) -> Assessment:
         )
 
     nearest = await conn.fetchval(_NEAREST_SQL, geojson)
+    intersections = json.loads(nearest) if isinstance(nearest,str) else nearest if isinstance(nearest,dict) else {}
+    if intersections:
+        nearest = intersections["nearest"]
     nearest_m = float(nearest) if nearest is not None else None
+    warning_intersection = intersections.get("warning_intersection",nws_warning)
+    hazard_intersection = intersections.get("hazard_intersection",any(h.source != "nws" for h in hits))
 
     gauges: list[GaugeInfluence] = []
     for row in await conn.fetch(_GAUGE_SQL, geojson, settings.gauge_influence_m):
@@ -355,15 +398,38 @@ async def assess(conn: asyncpg.Connection, geometry: LineString) -> Assessment:
         warnings.append("No elevation data for this route; terrain risk not assessed.")
 
     breakdown, band = score(hits, elevations, gauges, nearest_m)
+    severity_m = {}
+    for hit in hits:
+        if hit.source == "nws":
+            severity_m[hit.severity.value] = severity_m.get(hit.severity.value, 0) + hit.length_m
+    warning_m = sum(severity_m.values())
+    hazard_m = sum(h.length_m for h in hits if h.source != "nws")
+    from .ors import distance_m
+    from ..models import LatLng
+    edge_lengths = [distance_m(LatLng(lon=a[0],lat=a[1]),LatLng(lon=b[0],lat=b[1]))
+                    for a,b in zip(geometry.coordinates,geometry.coordinates[1:])]
+    # Use the same geodesic measurement as the SQL exposure denominator.
+    for row in exposure_rows:
+        if "edge" in row:
+            edge_lengths[row["edge"]-1] = float(row["edge_m"])
+    route_m = float(exposure_rows[0]["route_m"]) if exposure_rows and "route_m" in exposure_rows[0] else sum(edge_lengths)
+    starts = [0.0]
+    for length in edge_lengths: starts.append(starts[-1]+length)
+    intervals = [(float(r.get("start_m", starts[r["edge"]-1]))+float(r["lo"])*float(r["edge_m"]),
+                  float(r.get("start_m", starts[r["edge"]-1]))+float(r["hi"])*float(r["edge_m"]))
+                 for r in exposure_rows if r["source"]=="nws" and "edge" in r]
+    merged = union_intervals(intervals)
+    initial_exit = merged[0][1] if merged and merged[0][0] < 0.1 else 0.0
+    reentries = max(0,len(merged)-1)
 
     if hits:
-        total_m = sum(h.length_m for h in hits)
-        events = sorted({h.event for h in hits})
         warnings.append(
-            f"Intersects {', '.join(events)} for {total_m / 1000:.1f} km. Check current local road conditions."
+            f"Unique NWS warning exposure: {warning_m / 1000:.2f} km. Hazard exposure: {hazard_m / 1000:.2f} km. These evidence categories may overlap; do not add them."
         )
-    if nws_warning:
+    if warning_intersection:
         warnings.append("NWS polygons describe warning areas, not confirmed flooded roads. Road passability is unknown; never drive through observed floodwater.")
+        if not warning_m:
+            warnings.append("The route touches a warning boundary. Measured exposure is zero, but complete polygon avoidance is not established.")
         # Keep conservative exposure scoring, without equating an alert overlap
         # with observed water on a road.
     flooded_gauges = [g for g in gauges if g.at_flood_stage]
@@ -380,7 +446,13 @@ async def assess(conn: asyncpg.Connection, geometry: LineString) -> Assessment:
         min_elevation_m=min(elevations) if elevations else None,
         max_elevation_m=max(elevations) if elevations else None,
         warnings=warnings,
-        clear_of_flooding=not hits,
+        clear_of_flooding=not warning_intersection and not hazard_intersection,
+        warning_intersection=warning_intersection, hazard_intersection=hazard_intersection,
+        route_length_m=route_m,
+        warning_exposure_m=warning_m,
+        warning_exposure_percent=min(100,100*warning_m/route_m) if route_m else 0,
+        warning_severity_m=severity_m, hazard_exposure_m=hazard_m,
+        initial_warning_exit_m=initial_exit, warning_reentries=reentries,
     )
 
 
@@ -391,3 +463,14 @@ def _severity(value: str | None) -> FloodSeverity:
         return FloodSeverity(value.lower())
     except ValueError:
         return FloodSeverity.UNKNOWN
+
+
+def union_intervals(intervals):
+    """Union along-route intervals without double-counting overlapping alerts."""
+    merged = []
+    for lo,hi in sorted(intervals):
+        if merged and lo <= merged[-1][1]+0.001:
+            merged[-1] = (merged[-1][0],max(hi,merged[-1][1]))
+        else:
+            merged.append((lo,hi))
+    return merged

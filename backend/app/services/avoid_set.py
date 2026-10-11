@@ -41,7 +41,10 @@ relevant AS (
     FROM flood_zones fz
     CROSS JOIN corridor c
     WHERE (fz.expires IS NULL OR fz.expires > now())
-      AND fz.source <> 'nws'
+      AND ($8::boolean OR fz.source <> 'nws')
+      AND NOT (fz.source='nws' AND (
+          ST_Covers(fz.geom,ST_SetSRID(ST_MakePoint($1,$2),4326)) OR
+          ST_Covers(fz.geom,ST_SetSRID(ST_MakePoint($3,$4),4326))))
       AND ($7::text[] IS NULL OR fz.severity = ANY($7::text[]))
       AND ST_Intersects(fz.geom, c.geom)
 ),
@@ -121,6 +124,7 @@ async def build(
     origin: LatLng,
     destination: LatLng,
     high_severity_only: bool = False,
+    include_warnings: bool = False,
 ) -> AvoidSet:
     """Assemble the avoid-polygon payload for one ORS call."""
     settings = get_settings()
@@ -137,6 +141,7 @@ async def build(
         settings.corridor_buffer_m,
         settings.flood_buffer_m,
         severities,
+        include_warnings,
     )
 
     if not rows:
@@ -211,3 +216,12 @@ async def origin_in_warning(conn: asyncpg.Connection, origin: LatLng) -> bool:
         "AND ST_Covers(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326)))",
         origin.lon, origin.lat,
     ))
+
+
+async def hazard_areas(conn):
+    """Full polygons, never a clipped/dropped subset advertised as complete."""
+    return await conn.fetch(
+        "SELECT source, severity, ST_AsGeoJSON(d.geom) AS geometry "
+        "FROM flood_zones, LATERAL ST_Dump(ST_CollectionExtract(ST_MakeValid(geom),3)) d "
+        "WHERE expires IS NULL OR expires > now() LIMIT 201"
+    )

@@ -199,7 +199,10 @@ export default function MapView({
         .setHTML(
           `<strong>${escapeHtml(String(p.event))}</strong>` +
             (p.headline ? `<br/>${escapeHtml(String(p.headline))}` : "") +
-            "<br/>Warning / hazard area; road flooding is not confirmed by this polygon.",
+            `<br/>Severity: ${escapeHtml(String(p.severity ?? "unknown"))}` +
+            (p.source === "nws"
+              ? "<br/>NWS alert region, not confirmed floodwater on roads."
+              : "<br/>Recorded hazard area; crossing routes are excluded. Check current road closures."),
         )
         .addTo(m);
     });
@@ -257,6 +260,8 @@ export default function MapView({
           geometry: z.geometry as GeoJSON.MultiPolygon,
           properties: {
             id: z.id,
+            source: z.source,
+            severity: z.severity,
             event: z.event,
             headline: z.headline ?? "",
             color: SEVERITY_COLORS[z.severity] ?? SEVERITY_COLORS.unknown,

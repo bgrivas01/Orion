@@ -4,6 +4,7 @@ Flow: ask ORS for several candidates, then score every one of them ourselves in
 PostGIS and rank. Never assume ORS honoured an avoid polygon.
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -27,7 +28,7 @@ from ..models import (
     SnapProposal,
 )
 from ..services import avoid_set as avoid_set_svc
-from ..services import ors, risk
+from ..services import ors, risk, hazard_router
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +60,11 @@ async def plan_routes(req: RouteRequest) -> RouteResponse:
         return await _unscored_fallback(req)
 
     async with pool.acquire() as conn:
-        response = await _plan(conn, req)
+        try:
+            async with asyncio.timeout(settings.routing_timeout_s):
+                response = await _plan(conn, req)
+        except TimeoutError as exc:
+            raise HTTPException(status_code=503, detail="Route assessment exceeded its time budget. Travel safety cannot be confirmed.") from exc
         response.accepted_snaps = req.accepted_snaps
         if req.accepted_snaps:
             response.warnings.append("Road points were confirmed by the user. Building access is not verified; snapping does not establish route safety.")
@@ -75,8 +80,12 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
 
     zone_count = await avoid_set_svc.count_active_zones(conn)
 
-    if zone_count and await avoid_set_svc.origin_in_warning(conn, req.origin):
+    origin_inside = bool(zone_count and await avoid_set_svc.origin_in_warning(conn, req.origin))
+    destination_inside = bool(zone_count and await avoid_set_svc.origin_in_warning(conn, req.destination))
+    if origin_inside:
         warnings.append("The origin is inside an NWS warning area. Any departure begins inside that area, so complete warning-area avoidance may be impossible. This does not confirm flooded roads.")
+    if destination_inside:
+        warnings.append("The destination is inside an NWS warning area. Some warning exposure may be unavoidable; consider another destination or delaying travel.")
 
     # Establish a real baseline first, both for distance limits and snapping.
     try:
@@ -114,24 +123,41 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
             warnings.append(f"Alternative search: {exc}")
             stopped = isinstance(exc, (ors.ORSRateLimited, ors.ORSCredentialsError, ors.ORSAccessDenied))
 
-    if search:
-        if baseline.distance_m < 100_000:
-            await attempt(RouteLabel.ALTERNATIVE, alternatives=True)
-        elif req.profile == "driving-car":
-            warnings.append("Trip exceeds the 100 km ORS alternative-route limit. Evaluating bounded shortest-road and highway-avoidance routes instead; this is not an exhaustive search.")
-            await attempt(RouteLabel.ALTERNATIVE, preference="shortest")
-            await attempt(RouteLabel.ALTERNATIVE, avoid_features=["highways"])
+    # Real area avoidance takes priority over generic alternatives. Endpoint-
+    # containing warnings cannot be hard-blocked; the weighted engine handles them.
     if zone_count and baseline.distance_m <= settings.max_route_km_with_avoidance * 1000:
-        avoid = await avoid_set_svc.build(conn, req.origin, req.destination)
+        avoid = await avoid_set_svc.build(conn, req.origin, req.destination, include_warnings=search)
         warnings.extend(avoid.warnings)
         if avoid.geojson:
             await attempt(RouteLabel.ALTERNATIVE, avoid.geojson)
     elif zone_count:
         warnings.append("Trip exceeds the provider's 150 km area-avoidance limit; all returned routes are still flood-risk assessed.")
 
+    if search and zone_count and not stopped and calls < 4:
+        if settings.hazard_router_url and req.profile == "driving-car":
+            calls += 1
+            try:
+                areas = await avoid_set_svc.hazard_areas(conn)
+                weighted = await hazard_router.route(req.origin, req.destination, areas,
+                    inside_warning=origin_inside or destination_inside)
+                if weighted.distance_m <= baseline.distance_m*1.75 and weighted.duration_s <= baseline.duration_s*2:
+                    plans.append((RouteLabel.ALTERNATIVE, True))
+                    results.append(weighted)
+                else:
+                    warnings.append("Hazard-weighted detour exceeded the distance/time budget.")
+            except ors.ORSError as exc:
+                warnings.append(str(exc))
+        else:
+            warnings.append("Hazard-weighted road routing is unavailable. ORS cannot fully optimize large or endpoint-containing warning areas; candidate search is limited.")
+    if search and baseline.distance_m < 100_000:
+        await attempt(RouteLabel.ALTERNATIVE, alternatives=True)
+    elif search:
+        warnings.append("Trip exceeds the 100 km ORS alternative-route limit. Shortest-road and highway-avoidance requests are not substitutes for flood-warning avoidance.")
+
     # ---- dispose: score every candidate ourselves -------------------------- #
     candidates: list[RouteCandidate] = []
     seen: list[ors.RouteResult] = []
+    baseline_candidate = None
 
     for (label, poly), result in zip(plans, results, strict=True):
         if isinstance(result, ors.ORSUnavailable):
@@ -148,9 +174,9 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
             warnings.append(f"Internal routing failure for the {label.value} route.")
             continue
 
-        # Collapse candidates that came back effectively identical — common when
-        # ORS ignores the avoid polygon entirely.
-        if any(_same_corridor(result, prior) for prior in seen):
+        # Only exact duplicates can be discarded before assessment. Nearby roads
+        # can sit on opposite sides of a warning/hazard boundary.
+        if any(result.geometry.coordinates == prior.geometry.coordinates for prior in seen):
             continue
         seen.append(result)
 
@@ -163,12 +189,11 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
                 "route that still intersects an active warning or hazard area."
             )
 
-        candidates.append(
-            RouteCandidate(
+        candidate = RouteCandidate(
                 id=f"{label.value}-{uuid4().hex[:8]}",
                 label=label,
                 geometry=result.geometry,
-                distance_m=round(result.distance_m, 1),
+                distance_m=assessment.route_length_m or result.distance_m,
                 duration_s=round(result.duration_s, 1),
                 risk_score=assessment.breakdown.total,
                 risk_band=assessment.band,
@@ -176,14 +201,30 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
                 flagged_segments=assessment.flagged_segments,
                 min_elevation_m=assessment.min_elevation_m,
                 max_elevation_m=assessment.max_elevation_m,
-                elevation_profile=_profile(result.geometry, result.distance_m),
+                elevation_profile=_profile(result.geometry, assessment.route_length_m or result.distance_m),
                 avoidance_requested=poly is not None,
                 avoidance_verified=assessment.clear_of_flooding,
+                warning_exposure_m=assessment.warning_exposure_m,
+                warning_exposure_percent=assessment.warning_exposure_percent,
+                warning_severity_m=assessment.warning_severity_m,
+                hazard_exposure_m=assessment.hazard_exposure_m,
+                initial_warning_exit_m=assessment.initial_warning_exit_m,
+                warning_reentries=assessment.warning_reentries,
+                warning_avoidance_achieved=assessment.warning_exposure_m == 0 and not assessment.warning_intersection,
                 warnings=candidate_warnings,
             )
-        )
+        if label == RouteLabel.FASTEST:
+            baseline_candidate = candidate
+        if assessment.hazard_exposure_m > 0 or assessment.hazard_intersection:
+            warnings.append("A candidate intersecting a recorded non-NWS hazard area was excluded. No route through known hazards is offered.")
+            continue
+        candidates.append(candidate)
 
     if not candidates:
+        if baseline_candidate is not None:
+            return RouteResponse(request_id=uuid4(), generated_at=datetime.now(UTC), routes=[],
+                flood_zones_considered=zone_count, no_lower_risk_route_found=True,
+                warnings=warnings+[NO_LOWER_EXPOSURE])
         if isinstance(results[0], ors.ORSLocationError):
             return await _snap_proposal(req, results[0])
         raise HTTPException(
@@ -192,7 +233,7 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
             detail="No route could be computed. " + (" ".join(warnings) or ""),
         )
 
-    candidates.sort(key=lambda c: (c.risk_score, c.duration_s))
+    candidates.sort(key=_exposure_key if req.preference == RoutePreference.SAFEST else lambda c: (c.risk_score, c.duration_s))
 
     if all(not c.avoidance_verified for c in candidates) and zone_count:
         warnings.append(
@@ -201,11 +242,11 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
         )
 
     recommended = _recommend(candidates, req.preference)
-    baseline_score = candidates[next(i for i, c in enumerate(candidates) if c.label == RouteLabel.FASTEST)].risk_score
-    lower_found = any(c.risk_score < baseline_score and c.risk_band != RiskBand.DANGEROUS for c in candidates)
-    no_lower = search and not lower_found
+    lower_found = any(_warning_key(c) < _warning_key(baseline_candidate) for c in candidates)
+    no_lower = search and (recommended is None or (not lower_found and not any(c.avoidance_verified for c in candidates)))
     if no_lower:
-        warnings.append("No lower-risk route found")
+        warnings.append(NO_LOWER_EXPOSURE)
+        recommended = None
     if recommended is None:
         warnings.append("Evaluated routes are for information only, not safe navigation guidance. Avoid travel through floodwater; consider delaying travel.")
     request_id = uuid4()
@@ -221,6 +262,22 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
         no_lower_risk_route_found=no_lower,
         warnings=warnings,
     )
+
+
+NO_LOWER_EXPOSURE = "No lower-exposure route found. Travel safety cannot be confirmed."
+
+
+def _warning_key(c: RouteCandidate):
+    severity = c.warning_severity_m
+    return (not c.warning_avoidance_achieved,
+            *(severity.get(s, 0) for s in ("extreme", "severe", "moderate", "unknown", "minor")),
+            c.warning_exposure_m, c.initial_warning_exit_m, c.warning_reentries)
+
+
+def _exposure_key(c: RouteCandidate):
+    """Evidence first; highest severity dominates. Never rank by a saturated score."""
+    return (c.hazard_exposure_m, c.risk_breakdown.gauge_proximity,
+            *_warning_key(c), c.risk_breakdown.low_lying, c.duration_s)
 
 
 def _same_corridor(a: ors.RouteResult, b: ors.RouteResult) -> bool:
@@ -246,6 +303,9 @@ def _same_corridor(a: ors.RouteResult, b: ors.RouteResult) -> bool:
 def _recommend(
     candidates: list[RouteCandidate], preference: RoutePreference
 ) -> RouteCandidate | None:
+    if preference == RoutePreference.SAFEST:
+        best = min(candidates, key=_exposure_key) if candidates else None
+        return best if best and best.risk_band != RiskBand.DANGEROUS else None
     candidates = [c for c in candidates if c.risk_band != RiskBand.DANGEROUS]
     if not candidates:
         return None
@@ -265,7 +325,7 @@ def _recommend(
             + 0.5 * ((c.duration_s / quickest) - 1.0),
         )
 
-    return min(candidates, key=lambda c: (c.risk_score, c.duration_s))
+    return min(candidates, key=_exposure_key)
 
 
 def _profile(geometry, distance_m: float):

@@ -12,7 +12,7 @@ def route(offset=0, distance=50000, duration=3600):
 
 
 def assessment(score):
-    return risk.Assessment(breakdown=RiskBreakdown(flood_exposure=score,low_lying=0,gauge_proximity=0,approach_margin=0,total=score),band=RiskBand.DANGEROUS if score>=50 else RiskBand.CAUTION,flagged_segments=[],clear_of_flooding=score==0)
+    return risk.Assessment(breakdown=RiskBreakdown(flood_exposure=score,low_lying=0,gauge_proximity=0,approach_margin=0,total=score),band=RiskBand.DANGEROUS if score>=50 else RiskBand.CAUTION,flagged_segments=[],clear_of_flooding=score==0,warning_exposure_m=score*100,warning_severity_m={"severe":score*100})
 
 
 @pytest.fixture
@@ -39,17 +39,17 @@ async def test_short_trip_evaluates_distinct_routes_with_identical_time_distance
     ors.alternatives.assert_awaited_once()
 
 
-async def test_sulphur_lafayette_long_trip_uses_network_options_not_short_alternatives(setup,monkeypatch):
+async def test_sulphur_lafayette_long_trip_does_not_claim_generic_options_avoid_warnings(setup,monkeypatch):
     monkeypatch.setattr(ors,"directions",AsyncMock(side_effect=[route(distance=135000),route(.05,150000,4500),route(-.05,160000,4800)]))
     monkeypatch.setattr(risk,"assess",AsyncMock(side_effect=[assessment(80),assessment(30),assessment(45)]))
     result=await routes._plan(None,setup)
-    assert len(result.routes)==3
+    assert len(result.routes)==1
     ors.alternatives.assert_not_called()
     calls=ors.directions.call_args_list
-    assert calls[1].kwargs["preference"]=="shortest"
-    assert calls[2].kwargs["avoid_features"]==["highways"]
+    assert len(calls)==1
     assert all(c.args==(setup.origin,setup.destination) for c in calls)
-    assert result.recommended_id is not None
+    assert result.recommended_id is None
+    assert any("Hazard-weighted road routing is unavailable" in w for w in result.warnings)
 
 
 async def test_all_dangerous_not_recommended_and_origin_warning_explained(setup,monkeypatch):
@@ -57,7 +57,7 @@ async def test_all_dangerous_not_recommended_and_origin_warning_explained(setup,
     result=await routes._plan(None,setup)
     assert result.recommended_id is None
     assert result.no_lower_risk_route_found
-    assert "No lower-risk route found" in result.warnings
+    assert routes.NO_LOWER_EXPOSURE in result.warnings
     assert any("origin is inside" in w for w in result.warnings)
     assert any("information only" in w for w in result.warnings)
 
@@ -69,6 +69,7 @@ async def test_failed_detours_preserve_information_route(setup,monkeypatch):
 
 
 async def test_quota_stops_additional_attempts(setup,monkeypatch):
+    monkeypatch.setattr(avoid_set,"build",AsyncMock(return_value=avoid_set.AvoidSet({"type":"MultiPolygon","coordinates":[]},1,[])))
     monkeypatch.setattr(ors,"directions",AsyncMock(side_effect=[route(distance=135000),ors.ORSRateLimited("quota")]))
     result=await routes._plan(None,setup)
     assert ors.directions.await_count==2
@@ -78,8 +79,10 @@ async def test_quota_stops_additional_attempts(setup,monkeypatch):
 async def test_duplicates_by_geometry_not_rounded_time(setup,monkeypatch):
     monkeypatch.setattr(ors,"alternatives",AsyncMock(return_value=[route(distance=50100,duration=3650),route(.00001)]))
     result=await routes._plan(None,setup)
-    assert len(result.routes)==1
-    assert risk.assess.await_count==1
+    # Nearby geometries may lie on opposite sides of a hazard boundary. Only
+    # identical geometry is deduplicated before full assessment.
+    assert len(result.routes)==2
+    assert risk.assess.await_count==2
 
 
 async def test_excessive_detours_excluded(setup,monkeypatch):
@@ -109,7 +112,7 @@ async def test_long_trip_budget_includes_area_avoidance(setup,monkeypatch):
     monkeypatch.setattr(ors,"directions",AsyncMock(return_value=route(distance=135000)))
     monkeypatch.setattr(avoid_set,"build",AsyncMock(return_value=avoid_set.AvoidSet({"type":"MultiPolygon","coordinates":[]},1,[])))
     await routes._plan(None,setup)
-    assert ors.directions.await_count==4
+    assert ors.directions.await_count==2
     ors.alternatives.assert_not_called()
 
 

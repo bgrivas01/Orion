@@ -7,7 +7,6 @@ import {
   formatDistance,
   formatDuration,
   formatElevation,
-  totalFloodedMeters,
   type RouteCandidate,
 } from "@orion/shared";
 import ElevationProfile from "./ElevationProfile";
@@ -23,7 +22,7 @@ interface Props {
 
 export default function RouteCard({ route, selected, recommended, quickest, onSelect }: Props) {
   const band = bandStyle(route.risk_band);
-  const floodedM = totalFloodedMeters(route);
+  const warningM = route.warning_exposure_m ?? 0;
 
   return (
     <button
@@ -47,7 +46,7 @@ export default function RouteCard({ route, selected, recommended, quickest, onSe
               className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
               style={{ background: "var(--grid)", color: "var(--text-secondary)" }}
             >
-              Recommended
+              {warningM > 0 ? "Lower exposure" : "Recommended"}
             </span>
           )}
         </div>
@@ -78,11 +77,17 @@ export default function RouteCard({ route, selected, recommended, quickest, onSe
         {band.blurb}
       </p>
 
-      {floodedM > 0 && (
+      {warningM > 0 && (
         <p className="mt-1.5 text-[11px] font-medium" style={{ color: "var(--status-critical)" }}>
-          ✕ {formatDistance(floodedM)} inside warning / hazard areas
+          {formatDistance(warningM)} inside NWS warning areas ({(route.warning_exposure_percent ?? 0).toFixed(1)}% of route; overlaps counted once)
         </p>
       )}
+      {Object.entries(route.warning_severity_m ?? {}).filter(([,m]) => m > 0).map(([severity,m]) => (
+        <p key={severity} className="text-xs">{severity}: {formatDistance(m)} — highest NWS severity on each segment</p>
+      ))}
+      {(route.initial_warning_exit_m ?? 0) > 0 && <p className="text-xs">First exit from warnings after {formatDistance(route.initial_warning_exit_m!)}; later entries: {route.warning_reentries ?? 0}.</p>}
+      {(route.hazard_exposure_m ?? 0) > 0 && <p className="text-xs font-semibold">Recorded hazard overlap: {formatDistance(route.hazard_exposure_m!)}. Do not use this route.</p>}
+      {route.warning_avoidance_achieved && <p className="text-xs">Complete avoidance of current NWS warning polygons verified. Road safety is not guaranteed.</p>}
 
       {route.flagged_segments.some((s) => s.evidence === "warning_area" || s.source === "nws") && (
         <p className="mt-1 text-xs">NWS warning-area overlap is not confirmed floodwater on roads.</p>

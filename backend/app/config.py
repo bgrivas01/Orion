@@ -9,6 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    hazard_router_url: str = ""  # Optional self-hosted GraphHopper /route endpoint.
+    hazard_router_profile: str = "car"
+    routing_timeout_s: float = Field(60, gt=0, le=120)
     road_snap_limit_m: float = Field(150, gt=0, le=350)
     ors_api_key: str = ""
     database_url: str = ""
