@@ -2,13 +2,14 @@
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    road_snap_limit_m: float = Field(150, gt=0, le=350)
     ors_api_key: str = ""
     database_url: str = ""
 

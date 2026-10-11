@@ -8,10 +8,11 @@ interface Props {
   label: string;
   value: string;
   onPick: (place: Place) => void;
+  onEdit?: () => void;
   onUseLocation?: (at: LatLng) => void;
 }
 
-export default function PlaceSearch({ label, value, onPick, onUseLocation }: Props) {
+export default function PlaceSearch({ label, value, onPick, onUseLocation, onEdit }: Props) {
   const [query, setQuery] = useState(value);
   const [results, setResults] = useState<Place[]>([]);
   const [open, setOpen] = useState(false);
@@ -24,20 +25,22 @@ export default function PlaceSearch({ label, value, onPick, onUseLocation }: Pro
   useEffect(() => {
     if (query.length < 3 || query === value) {
       setResults([]);
+      setBusy(false);
       return;
     }
+    let active = true;
     const timer = setTimeout(async () => {
       setBusy(true);
       try {
-        setResults(await api.geocode(query));
-        setOpen(true);
+        const places = await api.geocode(query);
+        if (active) { setResults(places); setOpen(true); }
       } catch {
-        setResults([]);
+        if (active) setResults([]);
       } finally {
-        setBusy(false);
+        if (active) setBusy(false);
       }
     }, 300);
-    return () => clearTimeout(timer);
+    return () => { active = false; clearTimeout(timer); };
   }, [query, value]);
 
   useEffect(() => {
@@ -56,7 +59,7 @@ export default function PlaceSearch({ label, value, onPick, onUseLocation }: Pro
       <div className="flex gap-1.5">
         <input
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { setQuery(e.target.value); onEdit?.(); }}
           onFocus={() => results.length && setOpen(true)}
           placeholder="Search an address or place"
           className="w-full rounded-lg px-2.5 py-2 text-sm outline-none"

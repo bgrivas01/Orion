@@ -17,6 +17,8 @@ export type Place = S["Place"];
 export type LineString = S["LineString"];
 export type MultiPolygon = S["MultiPolygon"];
 
+export type SnapProposal = S["SnapProposal"];
+export type SnapConfirmation = S["SnapConfirmation"];
 export type RouteRequest = S["RouteRequest"];
 export type RouteResponse = S["RouteResponse"];
 export type RouteCandidate = S["RouteCandidate"];
