@@ -184,11 +184,19 @@ export interface components {
             /** Elevation M */
             elevation_m: number;
         };
-        /**
-         * FlaggedSegment
-         * @description A stretch of route that intersects a flood zone. The map paints these red.
-         */
+        /** FlaggedSegment */
         FlaggedSegment: {
+            /**
+             * Source
+             * @default unknown
+             */
+            source: string;
+            /**
+             * Evidence
+             * @default hazard_area
+             * @enum {string}
+             */
+            evidence: "warning_area" | "hazard_area";
             geometry: components["schemas"]["LineString"];
             /** Length M */
             length_m: number;
@@ -488,7 +496,7 @@ export interface components {
          * RouteLabel
          * @enum {string}
          */
-        RouteLabel: "fastest" | "balanced" | "safest";
+        RouteLabel: "alternative" | "fastest" | "balanced" | "safest";
         /**
          * RoutePreference
          * @description How hard the caller wants us to trade time for safety.
@@ -513,6 +521,11 @@ export interface components {
         };
         /** RouteResponse */
         RouteResponse: {
+            /**
+             * No Lower Risk Route Found
+             * @default false
+             */
+            no_lower_risk_route_found: boolean;
             /** Snap Proposals */
             snap_proposals?: components["schemas"]["SnapProposal"][];
             /** Accepted Snaps */

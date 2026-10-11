@@ -142,6 +142,8 @@ async def directions(
     profile: str = "driving-car",
     avoid_polygons: dict[str, Any] | None = None,
     elevation: bool = True,
+    preference: str | None = None,
+    avoid_features: list[str] | None = None,
 ) -> RouteResult:
     """Fetch one route.
 
@@ -156,24 +158,38 @@ async def directions(
     if avoid_polygons:
         payload["options"] = {"avoid_polygons": avoid_polygons}
 
+    if preference:
+        payload["preference"] = preference
+    if avoid_features:
+        payload.setdefault("options", {})["avoid_features"] = avoid_features
     data = await _post(f"/v2/directions/{profile}/geojson", payload)
 
+    return _route_results(data)[0]
+
+
+def _route_results(data: dict[str, Any]) -> list[RouteResult]:
     features = data.get("features") or []
     if not features:
         raise ORSNoRoute("ORS routing returned no route. Choose public-road entrances or different locations.")
+    routes = []
+    for feature in features:
+        geometry = feature.get("geometry") or {}
+        coords = geometry.get("coordinates") or []
+        if geometry.get("type") != "LineString" or len(coords) < 2:
+            raise ORSError("ORS returned invalid route geometry")
+        summary = (feature.get("properties") or {}).get("summary") or {}
+        routes.append(RouteResult(LineString(coordinates=coords),
+            float(summary.get("distance") or 0), float(summary.get("duration") or 0)))
+    return routes
 
-    feature = features[0]
-    geometry = feature.get("geometry") or {}
-    coords = geometry.get("coordinates") or []
-    if not coords:
-        raise ORSError("ORS returned an empty geometry")
 
-    summary = (feature.get("properties") or {}).get("summary") or {}
-    return RouteResult(
-        geometry=LineString(coordinates=coords),
-        distance_m=float(summary.get("distance") or 0.0),
-        duration_s=float(summary.get("duration") or 0.0),
-    )
+async def alternatives(origin: LatLng, destination: LatLng, profile: str = "driving-car") -> list[RouteResult]:
+    data = await _post(f"/v2/directions/{profile}/geojson", {
+        "coordinates": [[origin.lon, origin.lat], [destination.lon, destination.lat]],
+        "elevation": True, "instructions": False,
+        "alternative_routes": {"target_count": 3, "weight_factor": 1.4, "share_factor": 0.6},
+    })
+    return _route_results(data)[:3]
 
 
 async def geocode(text: str, limit: int = 6) -> list[dict[str, Any]]:

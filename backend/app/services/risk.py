@@ -318,6 +318,8 @@ async def assess(conn: asyncpg.Connection, geometry: LineString) -> Assessment:
         )
         segments.append(
             FlaggedSegment(
+                source=row["source"],
+                evidence="warning_area" if row["source"] == "nws" else "hazard_area",
                 geometry=LineString(coordinates=json.loads(row["seg"])["coordinates"]),
                 length_m=round(float(row["len_m"]), 1),
                 flood_zone_id=row["id"],

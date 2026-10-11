@@ -161,3 +161,9 @@ async def test_both_failed_endpoints_are_preserved(monkeypatch, settings):
     result = await routes._snap_proposal(RouteRequest(origin=POINT,destination=other),ors.ORSLocationError("2010",(0,1)))
     assert [p.endpoint for p in result.snap_proposals] == ["origin","destination"]
     assert [p.original for p in result.snap_proposals] == [POINT,other]
+
+
+@pytest.fixture(autouse=True)
+def isolate_candidate_search(monkeypatch):
+    monkeypatch.setattr(ors, "alternatives", AsyncMock(return_value=[]))
+    monkeypatch.setattr(avoid_set, "origin_in_warning", AsyncMock(return_value=False))
