@@ -12,6 +12,8 @@ import {
   type Place,
   type RoutePreference,
   type RouteResponse,
+  type SnapProposal,
+  type SnapConfirmation,
 } from "@orion/shared";
 import PlaceSearch from "../components/PlaceSearch";
 import RouteCard from "../components/RouteCard";
@@ -37,6 +39,18 @@ export default function Home() {
   const [destLabel, setDestLabel] = useState("");
   const [preference, setPreference] = useState<RoutePreference>("safest");
 
+  const requestSequence = useRef(0);
+  const [proposals, setProposals] = useState<SnapProposal[]>([]);
+  const [accessConfirmed, setAccessConfirmed] = useState(false);
+  const [acceptedSnaps, setAcceptedSnaps] = useState<SnapConfirmation[]>([]);
+  const invalidate = () => {
+    requestSequence.current++;
+    setLoading(false);
+    setResult(null);
+    setProposals([]);
+    setAcceptedSnaps([]);
+    setAccessConfirmed(false);
+  };
   const [result, setResult] = useState<RouteResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [floodZones, setFloodZones] = useState<FloodZone[]>([]);
@@ -81,31 +95,42 @@ export default function Home() {
     api.gauges().then(setGauges).catch(() => setGauges([]));
   }, []);
 
-  const plan = useCallback(async () => {
+  const plan = useCallback(async (confirmed: SnapConfirmation[] = acceptedSnaps) => {
     if (!origin || !destination) return;
+    const sequence = ++requestSequence.current;
     setLoading(true);
     setError(null);
+    setProposals([]);
+    setAccessConfirmed(false);
     try {
-      const res = await api.planRoutes({ origin, destination, preference, profile: "driving-car" });
+      const roadOrigin = confirmed.find((s) => s.endpoint === "origin")?.proposed ?? origin;
+      const roadDestination = confirmed.find((s) => s.endpoint === "destination")?.proposed ?? destination;
+      const res = await api.planRoutes({ origin: roadOrigin, destination: roadDestination, preference, profile: "driving-car", accepted_snaps: confirmed });
+      if (sequence !== requestSequence.current) return;
+      setProposals(res.snap_proposals ?? []);
+      setAcceptedSnaps(confirmed);
       setResult(res);
       setSelectedId(res.recommended_id ?? res.routes[0]?.id ?? null);
     } catch (e) {
+      if (sequence !== requestSequence.current) return;
       setError(e instanceof Error ? e.message : "Could not plan a route.");
       setResult(null);
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [origin, destination, preference]);
+  }, [origin, destination, preference, acceptedSnaps]);
 
   const routes = result ? orderRoutes(result) : [];
   const quickest = routes.length ? quickestDuration(routes) : 0;
   const alerting = gauges.filter((g) => g.status === "flood" || g.status === "action").length;
 
   const pickOrigin = (p: Place) => {
+    invalidate();
     setOrigin({ lat: p.lat, lon: p.lon });
     setOriginLabel(p.name);
   };
   const pickDestination = (p: Place) => {
+    invalidate();
     setDestination({ lat: p.lat, lon: p.lon });
     setDestLabel(p.name);
   };
@@ -153,12 +178,14 @@ export default function Home() {
             label="From"
             value={originLabel}
             onPick={pickOrigin}
+            onEdit={() => { invalidate(); setOrigin(null); }}
             onUseLocation={(at) => {
+              invalidate();
               setOrigin(at);
               setOriginLabel("My location");
             }}
           />
-          <PlaceSearch label="To" value={destLabel} onPick={pickDestination} />
+          <PlaceSearch label="To" value={destLabel} onPick={pickDestination} onEdit={() => { invalidate(); setDestination(null); }} />
 
           <div>
             <span
@@ -172,7 +199,7 @@ export default function Home() {
                 <button
                   key={p.value}
                   type="button"
-                  onClick={() => setPreference(p.value)}
+                  onClick={() => { invalidate(); setPreference(p.value); }}
                   aria-pressed={preference === p.value}
                   className="flex-1 rounded-lg px-2 py-1.5 text-xs font-medium"
                   style={{
@@ -189,7 +216,7 @@ export default function Home() {
 
           <button
             type="button"
-            onClick={plan}
+            onClick={() => void plan()}
             disabled={!origin || !destination || loading}
             className="w-full rounded-lg py-2.5 text-sm font-semibold disabled:opacity-40"
             style={{ background: "var(--series-1)", color: "#ffffff" }}
@@ -197,6 +224,26 @@ export default function Home() {
             {loading ? "Checking conditions…" : "Find the safest route"}
           </button>
 
+          {proposals.length > 0 && (
+            <section role="region" aria-label="Confirm nearby road" className="space-y-2 rounded-lg border p-3 text-sm">
+              {proposals.map((snap) => (
+                <p key={snap.endpoint}>
+                  {snap.endpoint === "origin" ? "From" : "To"}: We found a nearby driving-network point {Math.round(snap.distance_m)} meters from your selected location. Use this point?
+                  <br />Original: {snap.original.lat.toFixed(5)}, {snap.original.lon.toFixed(5)}.
+                  <br />Proposed: {snap.proposed.lat.toFixed(5)}, {snap.proposed.lon.toFixed(5)}.
+                </p>
+              ))}
+              <p>This does not verify building access or flood safety. If a highway, barrier, restricted entrance or uncertain access separates you from this point, Cancel and select a public-road entrance manually.</p>
+              <label className="flex gap-2">
+                <input type="checkbox" checked={accessConfirmed} onChange={(e) => setAccessConfirmed(e.target.checked)} />
+                I have checked that the proposed point is publicly accessible for my trip.
+              </label>
+              <div className="flex gap-4">
+                <button type="button" disabled={!accessConfirmed || loading} className="disabled:opacity-40" onClick={() => void plan(proposals.map((s) => ({ ...s, public_access_confirmed: true })))}>Accept</button>
+                <button type="button" onClick={() => { invalidate(); setError("Select a public-road entrance or nearby address."); }}>Cancel</button>
+              </div>
+            </section>
+          )}
           {error && (
             <p
               className="rounded-lg p-2 text-xs"

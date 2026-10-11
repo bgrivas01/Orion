@@ -5,6 +5,8 @@ per route request, so callers should not retry blindly.
 """
 
 import logging
+import math
+import re
 from typing import Any
 
 import httpx
@@ -38,6 +40,10 @@ class ORSRateLimited(ORSUnavailable):
 class ORSLocationError(ORSError):
     """A selected point cannot be connected to the routing network."""
 
+    def __init__(self, message: str, endpoint_indices: tuple[int, ...] = ()):
+        super().__init__(message)
+        self.endpoint_indices = endpoint_indices
+
 
 class ORSNoRoute(ORSError):
     """The provider could not connect the selected locations."""
@@ -60,7 +66,12 @@ def response_data(response: httpx.Response, service: str) -> dict[str, Any]:
     code = error_code(response)
     if service == "routing" and status in (400, 404):
         if code == 2010:
-            raise ORSLocationError("ORS routing: a selected location is not near a routable road (2010). Select a public-road entrance instead of a campus or airport centre.")
+            body = response.json()
+            message = body.get("error", {}).get("message", "")
+            indices = tuple(sorted({int(i) for i in re.findall(
+                r"(?:point|coordinate)\s+([01])\b", message, re.IGNORECASE
+            )})) if isinstance(message, str) else ()
+            raise ORSLocationError("ORS routing: a selected location is not near a routable road (2010). Select a public-road entrance instead of a campus or airport centre.", indices)
         if code == 2009:
             raise ORSNoRoute("ORS routing: no connected route was found (2009). Check public-road entrances and access restrictions, or choose different locations.")
         if code == 2004:
@@ -202,3 +213,48 @@ async def geocode(text: str, limit: int = 6) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def distance_m(a: LatLng, b: LatLng) -> float:
+    lat1, lat2 = math.radians(a.lat), math.radians(b.lat)
+    h = math.sin((lat2-lat1)/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(math.radians(b.lon-a.lon)/2)**2
+    return 6371000 * 2 * math.asin(min(1, math.sqrt(h)))
+
+
+async def snap_points(points: list[LatLng]) -> list[LatLng | None]:
+    """Bounded proposal lookup only; never infers building or public access."""
+    settings = get_settings()
+    if not settings.ors_api_key:
+        raise ORSError("Road snapping is not configured. Select a public-road entrance.")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                f"{settings.ors_base_url}/v2/snap/driving-car/json",
+                headers={"Authorization": settings.ors_api_key, "Accept": "application/json"},
+                json={"locations": [[p.lon, p.lat] for p in points], "radius": settings.road_snap_limit_m},
+            )
+    except httpx.HTTPError as exc:
+        raise ORSUnavailable("Road snapping could not be reached. Select a public-road entrance.") from exc
+    log.info("ORS snap status=%d code=%s point_count=%d", response.status_code, error_code(response), len(points))
+    if response.status_code in (404, 405, 501):
+        raise ORSError("Road snapping is unsupported by this service. Select a public-road entrance.")
+    if not 200 <= response.status_code < 300:
+        response_data(response, "snapping")  # Shared, sanitized credential/quota errors.
+    try:
+        locations = response.json()["locations"]
+        if not isinstance(locations, list) or len(locations) != len(points):
+            raise ValueError()
+        result = []
+        for original, location in zip(points, locations, strict=True):
+            if location is None:
+                result.append(None)
+                continue
+            coordinates = location["location"]
+            if not isinstance(coordinates, list) or len(coordinates) != 2:
+                raise ValueError()
+            point = LatLng(lon=coordinates[0], lat=coordinates[1])
+            moved = distance_m(original, point)
+            result.append(point if 0.5 < moved <= settings.road_snap_limit_m else None)
+        return result
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ORSUnavailable("Road snapping returned invalid data. Select a public-road entrance.") from exc

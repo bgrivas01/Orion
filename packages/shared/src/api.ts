@@ -474,7 +474,7 @@ export interface components {
             avoidance_requested: boolean;
             /**
              * Avoidance Verified
-             * @description True only if we confirmed in PostGIS that the returned geometry is clear of all active flood zones. ORS avoid_polygons is unreliable, so this is the authoritative field — never trust avoidance_requested alone.
+             * @description True only if we confirmed in PostGIS that the returned geometry is clear of all active flood zones. ORS avoid_polygons is unreliable, so this is the polygon-overlap check, not proof of road passability or observed flooding.
              * @default false
              */
             avoidance_verified: boolean;
@@ -497,6 +497,8 @@ export interface components {
         RoutePreference: "safest" | "balanced" | "fastest";
         /** RouteRequest */
         RouteRequest: {
+            /** Accepted Snaps */
+            accepted_snaps?: components["schemas"]["SnapConfirmation"][];
             origin: components["schemas"]["LatLng"];
             destination: components["schemas"]["LatLng"];
             /**
@@ -511,6 +513,10 @@ export interface components {
         };
         /** RouteResponse */
         RouteResponse: {
+            /** Snap Proposals */
+            snap_proposals?: components["schemas"]["SnapProposal"][];
+            /** Accepted Snaps */
+            accepted_snaps?: components["schemas"]["SnapConfirmation"][];
             /**
              * Request Id
              * Format: uuid
@@ -536,6 +542,59 @@ export interface components {
              * @default []
              */
             warnings: string[];
+        };
+        /** SnapConfirmation */
+        SnapConfirmation: {
+            /**
+             * Endpoint
+             * @enum {string}
+             */
+            endpoint: "origin" | "destination";
+            original: components["schemas"]["LatLng"];
+            proposed: components["schemas"]["LatLng"];
+            /** Distance M */
+            distance_m: number;
+            /**
+             * Confirmation Required
+             * @default true
+             * @constant
+             */
+            confirmation_required: true;
+            /**
+             * Access Verified
+             * @default false
+             * @constant
+             */
+            access_verified: false;
+            /**
+             * Public Access Confirmed
+             * @constant
+             */
+            public_access_confirmed: true;
+        };
+        /** SnapProposal */
+        SnapProposal: {
+            /**
+             * Endpoint
+             * @enum {string}
+             */
+            endpoint: "origin" | "destination";
+            original: components["schemas"]["LatLng"];
+            proposed: components["schemas"]["LatLng"];
+            /** Distance M */
+            distance_m: number;
+            /**
+             * Confirmation Required
+             * @default true
+             * @constant
+             */
+            confirmation_required: true;
+            /**
+             * Access Verified
+             * @default false
+             * @constant
+             */
+            access_verified: false;
         };
         /** ValidationError */
         ValidationError: {

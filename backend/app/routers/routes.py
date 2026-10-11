@@ -24,6 +24,7 @@ from ..models import (
     RoutePreference,
     RouteRequest,
     RouteResponse,
+    SnapProposal,
 )
 from ..services import avoid_set as avoid_set_svc
 from ..services import ors, risk
@@ -42,14 +43,27 @@ async def plan_routes(req: RouteRequest) -> RouteResponse:
     if not settings.ors_api_key:
         raise HTTPException(status_code=503, detail="Routing API key is not configured.")
 
+    seen = set()
+    for snap in req.accepted_snaps:
+        if (snap.endpoint in seen or getattr(req, snap.endpoint) != snap.proposed
+                or ors.distance_m(snap.original, snap.proposed) > settings.road_snap_limit_m
+                or abs(ors.distance_m(snap.original, snap.proposed) - snap.distance_m) > 1):
+            raise HTTPException(status_code=422, detail="Invalid snapping confirmation. Select an entrance again.")
+        seen.add(snap.endpoint)
     pool = db.pool()
+    if req.accepted_snaps and pool is None:
+        raise HTTPException(status_code=503, detail="Flood-risk assessment is unavailable. Confirmed road points cannot be routed until assessment is restored.")
     if pool is None:
         # No database means no flood data and no scoring. Still return a usable
         # route rather than an error, clearly labelled as unscored.
         return await _unscored_fallback(req)
 
     async with pool.acquire() as conn:
-        return await _plan(conn, req)
+        response = await _plan(conn, req)
+        response.accepted_snaps = req.accepted_snaps
+        if req.accepted_snaps:
+            response.warnings.append("Road points were confirmed by the user. Building access is not verified; snapping does not establish route safety.")
+        return response
 
 
 # --------------------------------------------------------------------------- #
@@ -158,6 +172,8 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
         )
 
     if not candidates:
+        if isinstance(results[0], ors.ORSLocationError):
+            return await _snap_proposal(req, results[0])
         raise HTTPException(
             status_code=(422 if isinstance(results[0], (ors.ORSLocationError, ors.ORSNoRoute))
                          else 503 if all(isinstance(r, ors.ORSUnavailable) for r in results) else 502),
@@ -253,13 +269,35 @@ async def _persist(
         log.warning("could not record route request: %s", exc)
 
 
+async def _snap_proposal(req: RouteRequest, error: ors.ORSLocationError) -> RouteResponse:
+    manual = "Select a public-road entrance or nearby address. Building access cannot be inferred from the nearest road."
+    if req.profile != "driving-car" or req.accepted_snaps or not error.endpoint_indices:
+        raise HTTPException(status_code=422, detail=f"{error} {manual}")
+    names = ["origin" if i == 0 else "destination" for i in error.endpoint_indices]
+    points = [getattr(req, name) for name in names]
+    try:
+        proposed = await ors.snap_points(points)
+    except ors.ORSError as exc:
+        raise HTTPException(status_code=422, detail=f"{exc} {manual}") from exc
+    if any(point is None for point in proposed):
+        raise HTTPException(status_code=422, detail=f"No acceptable road point within {get_settings().road_snap_limit_m:g} metres. {manual}")
+    proposals = [SnapProposal(endpoint=name, original=original, proposed=point,
+                              distance_m=round(ors.distance_m(original, point), 1))
+                 for name, original, point in zip(names, points, proposed, strict=True)]
+    return RouteResponse(request_id=uuid4(), generated_at=datetime.now(UTC), routes=[],
+        snap_proposals=proposals,
+        warnings=["Confirmation required. Network proximity does not establish public access, building access or flood safety."])
+
+
 async def _unscored_fallback(req: RouteRequest) -> RouteResponse:
     """ORS is configured but the database is not: route, but do not pretend to score."""
     from ..models import RiskBand, RiskBreakdown
 
     try:
         result = await ors.directions(req.origin, req.destination, profile=req.profile)
-    except (ors.ORSLocationError, ors.ORSNoRoute) as exc:
+    except ors.ORSLocationError as exc:
+        return await _snap_proposal(req, exc)
+    except ors.ORSNoRoute as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ors.ORSUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

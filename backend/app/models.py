@@ -190,7 +190,21 @@ class RouteCandidate(BaseModel):
     warnings: list[str] = []
 
 
+class SnapProposal(BaseModel):
+    endpoint: Literal["origin", "destination"]
+    original: LatLng
+    proposed: LatLng
+    distance_m: float = Field(ge=0)
+    confirmation_required: Literal[True] = True
+    access_verified: Literal[False] = False
+
+
+class SnapConfirmation(SnapProposal):
+    public_access_confirmed: Literal[True]
+
+
 class RouteRequest(BaseModel):
+    accepted_snaps: list[SnapConfirmation] = Field(default_factory=list, max_length=2)
     origin: LatLng
     destination: LatLng
     profile: str = Field("driving-car", examples=["driving-car", "foot-walking"])
@@ -198,6 +212,8 @@ class RouteRequest(BaseModel):
 
 
 class RouteResponse(BaseModel):
+    snap_proposals: list[SnapProposal] = Field(default_factory=list)
+    accepted_snaps: list[SnapConfirmation] = Field(default_factory=list)
     request_id: UUID
     generated_at: datetime
     routes: list[RouteCandidate]
