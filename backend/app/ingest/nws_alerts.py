@@ -9,6 +9,7 @@ they never change) and union them.
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -53,6 +54,29 @@ ON CONFLICT (id) DO UPDATE
        expires = EXCLUDED.expires,
        ingested_at = now()
 """
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Parse NWS ISO 8601 timestamps; missing/invalid values become SQL NULL.
+
+    Require an explicit timezone rather than guessing one for malformed feed
+    data. Preserve supplied offsets; asyncpg handles TIMESTAMPTZ conversion.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        else:
+            raise ValueError("expected an ISO 8601 string")
+        if parsed.utcoffset() is None:
+            raise ValueError("timestamp has no timezone")
+        return parsed
+    except (ValueError, TypeError, OverflowError):
+        log.warning("invalid NWS timestamp %r; treating as missing", value)
+        return None
 
 
 async def _zone_geometry(
@@ -166,8 +190,9 @@ async def ingest(conn: asyncpg.Connection) -> int:
                         (props.get("severity") or "unknown").lower(),
                         props.get("headline"),
                         json.dumps(geometry),
-                        props.get("effective"),
-                        props.get("expires") or props.get("ends"),
+                        _parse_timestamp(props.get("effective")),
+                        _parse_timestamp(props.get("expires"))
+                        or _parse_timestamp(props.get("ends")),
                     )
                     written += 1
                 except Exception as exc:  # noqa: BLE001 - one bad polygon must not stop the run
