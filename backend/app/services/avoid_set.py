@@ -11,6 +11,7 @@ Whatever comes back from ORS is still verified independently in risk.py.
 
 import json
 import logging
+import math
 from typing import Any
 
 import asyncpg
@@ -40,6 +41,7 @@ relevant AS (
     FROM flood_zones fz
     CROSS JOIN corridor c
     WHERE (fz.expires IS NULL OR fz.expires > now())
+      AND fz.source <> 'nws'
       AND ($7::text[] IS NULL OR fz.severity = ANY($7::text[]))
       AND ST_Intersects(fz.geom, c.geom)
 ),
@@ -76,6 +78,18 @@ WHERE ST_GeometryType(geom) = 'ST_Polygon'
   AND NOT ST_IsEmpty(geom)
 ORDER BY area_km2 DESC
 """
+
+
+def _extent_km(polygons: list) -> float:
+    points = [point for polygon in polygons for ring in polygon for point in ring]
+    if not points:
+        return 0.0
+    # Bounding diagonal is conservative for the provider's extent constraint.
+    lon1, lon2 = min(p[0] for p in points), max(p[0] for p in points)
+    lat1, lat2 = min(p[1] for p in points), max(p[1] for p in points)
+    a, b = math.radians(lat1), math.radians(lat2)
+    h = math.sin((b-a)/2)**2 + math.cos(a)*math.cos(b)*math.sin(math.radians(lon2-lon1)/2)**2
+    return 6371 * 2 * math.asin(min(1, math.sqrt(h)))
 
 
 class AvoidSet:
@@ -130,13 +144,14 @@ async def build(
 
     kept: list[list[list[list[float]]]] = []
     dropped_oversize = 0
+    total_area = 0.0
 
     for row in rows:
         if len(kept) >= settings.max_avoid_polygon_parts:
             break
 
         if (
-            row["area_km2"] > settings.max_avoid_polygon_area_km2
+            total_area + row["area_km2"] > settings.max_avoid_polygon_area_km2
             or row["extent_km"] > settings.max_avoid_polygon_extent_km
         ):
             # ORS would reject the whole request. Dropping the part is safer:
@@ -150,18 +165,23 @@ async def build(
             continue
 
         polygon = json.loads(row["gj"])
+        if _extent_km(kept + [polygon["coordinates"]]) > settings.max_avoid_polygon_extent_km:
+            dropped_oversize += 1
+            continue
         kept.append(polygon["coordinates"])
+        total_area += row["area_km2"]
 
     if dropped_oversize:
         warnings.append(
             f"{dropped_oversize} flood zone(s) exceed the routing service's "
-            "200 km2 / 20 km avoidance limit and could not be routed around. "
+            f"{settings.max_avoid_polygon_area_km2:g} km2 total / "
+            f"{settings.max_avoid_polygon_extent_km:g} km avoidance limit and were omitted. "
             "Routes crossing them are still flagged."
         )
 
-    if len(rows) > settings.max_avoid_polygon_parts:
+    if len(rows) - len(kept) > dropped_oversize:
         warnings.append(
-            f"Only the {settings.max_avoid_polygon_parts} largest flood zones were "
+            f"Only {len(kept)} eligible hazard polygon(s) were "
             "sent to the routing service; all zones were still used for scoring."
         )
 

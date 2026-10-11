@@ -37,8 +37,10 @@ router = APIRouter(prefix="/api", tags=["routing"])
 async def plan_routes(req: RouteRequest) -> RouteResponse:
     settings = get_settings()
 
-    if settings.use_fixtures or not settings.ors_api_key:
+    if settings.use_fixtures:
         return fixture_routes()
+    if not settings.ors_api_key:
+        raise HTTPException(status_code=503, detail="Routing API key is not configured.")
 
     pool = db.pool()
     if pool is None:
@@ -108,9 +110,14 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
             warnings.append(f"Routing service unavailable for the {label.value} route: {result}")
             log.warning("ORS unavailable for %s: %s", label.value, result)
             continue
-        if isinstance(result, BaseException):
+        if isinstance(result, ors.ORSError):
             warnings.append(f"Could not compute the {label.value} route: {result}")
             log.warning("ORS failed for %s: %s", label.value, result)
+            continue
+
+        if isinstance(result, BaseException):
+            log.error("Route candidate failed label=%s category=internal", label.value)
+            warnings.append(f"Internal routing failure for the {label.value} route.")
             continue
 
         # Collapse candidates that came back effectively identical — common when
@@ -127,7 +134,7 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
         if poly is not None and not assessment.clear_of_flooding:
             candidate_warnings.append(
                 "Flood avoidance was requested but the routing service returned a "
-                "route that still crosses floodwater."
+                "route that still intersects an active warning or hazard area."
             )
 
         candidates.append(
@@ -152,7 +159,8 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
 
     if not candidates:
         raise HTTPException(
-            status_code=503 if all(isinstance(r, ors.ORSUnavailable) for r in results) else 502,
+            status_code=(422 if isinstance(results[0], (ors.ORSLocationError, ors.ORSNoRoute))
+                         else 503 if all(isinstance(r, ors.ORSUnavailable) for r in results) else 502),
             detail="No route could be computed. " + (" ".join(warnings) or ""),
         )
 
@@ -160,7 +168,7 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
 
     if all(not c.avoidance_verified for c in candidates) and zone_count:
         warnings.append(
-            "Every available route crosses an active flood zone. The least-exposed "
+            "Every available route intersects an active warning or hazard area. This does not confirm flooded roads. The least-exposed "
             "option is shown — consider delaying travel."
         )
 
@@ -251,6 +259,8 @@ async def _unscored_fallback(req: RouteRequest) -> RouteResponse:
 
     try:
         result = await ors.directions(req.origin, req.destination, profile=req.profile)
+    except (ors.ORSLocationError, ors.ORSNoRoute) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ors.ORSUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ors.ORSError as exc:
