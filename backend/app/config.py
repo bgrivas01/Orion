@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +17,17 @@ class Settings(BaseSettings):
     use_fixtures: bool = False
 
     # --- OpenRouteService service limits (see docs/known constraints) -------- #
-    ors_base_url: str = "https://api.openrouteservice.org"
+    ors_base_url: str = "https://api.heigit.org/openrouteservice"
+    geocoding_base_url: str = "https://api.heigit.org/pelias/v1"
+
+    @field_validator("ors_base_url")
+    @classmethod
+    def migrate_legacy_ors_url(cls, value: str) -> str:
+        value = value.rstrip("/")
+        if value == "https://api.openrouteservice.org":
+            return "https://api.heigit.org/openrouteservice"
+        return value
+
     # Hard caps enforced by the public ORS instance.
     max_avoid_polygon_area_km2: float = 200.0
     max_avoid_polygon_extent_km: float = 20.0

@@ -23,6 +23,41 @@ class ORSUnavailable(ORSError):
     """ORS could not be reached, or rate-limited us."""
 
 
+class ORSCredentialsError(ORSError):
+    """Upstream authentication failed (401)."""
+
+
+class ORSAccessDenied(ORSError):
+    """Upstream refused access (403); credential validity may be ambiguous."""
+
+
+class ORSRateLimited(ORSUnavailable):
+    """Upstream quota or rate limit exhausted (429)."""
+
+
+def response_data(response: httpx.Response, service: str) -> dict[str, Any]:
+    """Do not expose response bodies or request URLs, which may contain secrets."""
+    status = response.status_code
+    prefix = f"ORS {service}"
+    if status == 401:
+        raise ORSCredentialsError(f"{prefix}: invalid or missing API credentials (401). Check the server-side ORS_API_KEY.")
+    if status == 403:
+        raise ORSAccessDenied(f"{prefix}: access denied (403). Check API permissions and key validity in the HeiGIT dashboard.")
+    if status == 429:
+        raise ORSRateLimited(f"{prefix}: rate limit or quota exceeded (429). Retry later or check your HeiGIT quota.")
+    if status >= 500:
+        raise ORSUnavailable(f"{prefix}: upstream service error ({status}).")
+    if not 200 <= status < 300:
+        raise ORSError(f"{prefix}: request rejected ({status}).")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ORSUnavailable(f"{prefix}: invalid JSON response.") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("features"), list):
+        raise ORSUnavailable(f"{prefix}: invalid GeoJSON response.")
+    return data
+
+
 class RouteResult:
     """One route as ORS returned it, before any of our own scoring."""
 
@@ -51,18 +86,9 @@ async def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(url, json=payload, headers=headers)
     except httpx.HTTPError as exc:
-        raise ORSUnavailable(f"ORS request failed: {exc}") from exc
+        raise ORSUnavailable("ORS routing service could not be reached") from exc
 
-    if r.status_code == 429:
-        raise ORSUnavailable("ORS rate limit hit (40/min, 2000/day on the free tier)")
-    if r.status_code >= 500:
-        raise ORSUnavailable(f"ORS server error {r.status_code}")
-    if r.status_code >= 400:
-        # ORS puts a useful reason in the body — surface it, it is usually a
-        # violated avoid-polygon limit.
-        raise ORSError(f"ORS rejected the request ({r.status_code}): {r.text[:400]}")
-
-    return r.json()
+    return response_data(r, "routing")
 
 
 async def directions(
@@ -112,22 +138,23 @@ async def geocode(text: str, limit: int = 6) -> list[dict[str, Any]]:
         raise ORSError("ORS_API_KEY is not configured")
 
     params = {
-        "api_key": settings.ors_api_key,
         "text": text,
         "boundary.country": "US",
         "size": str(limit),
     }
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(f"{settings.ors_base_url}/geocode/autocomplete", params=params)
+            r = await client.get(
+                f"{settings.geocoding_base_url.rstrip('/')}/autocomplete",
+                params=params, headers={"Authorization": settings.ors_api_key},
+            )
     except httpx.HTTPError as exc:
-        raise ORSUnavailable(f"geocoding failed: {exc}") from exc
+        raise ORSUnavailable("ORS geocoding service could not be reached") from exc
 
-    if r.status_code >= 400:
-        raise ORSError(f"geocoding rejected ({r.status_code})")
+    data = response_data(r, "geocoding")
 
     out = []
-    for feat in (r.json().get("features") or []):
+    for feat in (data.get("features") or []):
         props = feat.get("properties") or {}
         coords = (feat.get("geometry") or {}).get("coordinates") or []
         if len(coords) < 2:
