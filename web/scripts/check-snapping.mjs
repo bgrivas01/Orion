@@ -35,7 +35,9 @@ try {
   await page.getByRole('button',{name:'Find the safest route'}).click();
   await panel.waitFor();
   await panel.getByRole('checkbox').check();
+  const confirmedResponse = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/api/routes'));
   await panel.getByRole('button',{name:'Accept',exact:true}).click();
+  await confirmedResponse;
   await panel.waitFor({state:'hidden'});
   assert.equal(calls.length,3);
   assert.deepEqual(calls[2].destination,proposed);
