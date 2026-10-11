@@ -55,6 +55,11 @@ export default function MapView({
   useEffect(() => {
     if (!container.current || map.current) return;
 
+    // MapLibre derives its default worker URL from import.meta.url, which
+    // Next.js can relocate into a chunk. The predev/prebuild script serves
+    // the matching installed worker at a stable same-origin URL instead.
+    maplibregl.setWorkerUrl("/maplibre-gl-worker.mjs");
+
     const m = new maplibregl.Map({
       container: container.current,
       style: STYLE_URL,
