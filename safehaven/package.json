@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite dev --port 3001",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "wrangler dev --config .output/server/wrangler.json --local",
     "test": "vitest run"
   },
   "dependencies": {
@@ -38,6 +38,7 @@
     "typescript": "^5.8.3",
     "vite": "8.1.5",
     "vite-tsconfig-paths": "^6.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "4.149.0"
   }
 }
