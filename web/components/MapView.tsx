@@ -113,7 +113,7 @@ export default function MapView({
         },
       });
 
-      // Flagged stretches draw on top, dashed, so "this bit is underwater"
+      // Flagged stretches draw on top, dashed, to show warning / hazard overlap
       // survives being the same colour family as the route.
       m.addSource("flagged", { type: "geojson", data: EMPTY as never });
       m.addLayer({
@@ -198,7 +198,8 @@ export default function MapView({
         .setLngLat(e.lngLat)
         .setHTML(
           `<strong>${escapeHtml(String(p.event))}</strong>` +
-            (p.headline ? `<br/>${escapeHtml(String(p.headline))}` : ""),
+            (p.headline ? `<br/>${escapeHtml(String(p.headline))}` : "") +
+            "<br/>Warning / hazard area; road flooding is not confirmed by this polygon.",
         )
         .addTo(m);
     });

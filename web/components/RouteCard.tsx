@@ -42,7 +42,7 @@ export default function RouteCard({ route, selected, recommended, quickest, onSe
           <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
             {ROUTE_LABELS[route.label]}
           </span>
-          {recommended && (
+          {recommended && route.risk_band !== "dangerous" && (
             <span
               className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
               style={{ background: "var(--grid)", color: "var(--text-secondary)" }}
@@ -80,13 +80,17 @@ export default function RouteCard({ route, selected, recommended, quickest, onSe
 
       {floodedM > 0 && (
         <p className="mt-1.5 text-[11px] font-medium" style={{ color: "var(--status-critical)" }}>
-          ✕ {formatDistance(floodedM)} through active floodwater
+          ✕ {formatDistance(floodedM)} inside warning / hazard areas
         </p>
       )}
 
+      {route.flagged_segments.some((s) => s.evidence === "warning_area" || s.source === "nws") && (
+        <p className="mt-1 text-xs">NWS warning-area overlap is not confirmed floodwater on roads.</p>
+      )}
+      {route.risk_band === "dangerous" && <p className="mt-1 font-semibold text-xs">Information only. Do not use this as safe navigation guidance.</p>}
       {route.avoidance_verified && route.avoidance_requested && (
         <p className="mt-1.5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-          ✓ Verified clear of every active flood zone
+          ✓ No intersection with current warning / hazard polygons; road safety is not verified
         </p>
       )}
 

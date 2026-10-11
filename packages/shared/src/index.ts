@@ -67,7 +67,7 @@ export interface BandStyle {
 export const RISK_BANDS: Record<RiskBand, BandStyle> = {
   safe: {
     label: "Safe",
-    blurb: "Clear of active flooding and low-lying ground.",
+    blurb: "Lower assessed risk, not a guarantee of road safety.",
     mark: "#0ca30c",
     bg: "rgba(12, 163, 12, 0.10)",
     icon: "✓",
@@ -81,7 +81,7 @@ export const RISK_BANDS: Record<RiskBand, BandStyle> = {
   },
   dangerous: {
     label: "Dangerous",
-    blurb: "Crosses active floodwater. Do not drive this route.",
+    blurb: "High assessed risk. Information only; not recommended for navigation.",
     mark: "#d03b3b",
     bg: "rgba(208, 59, 59, 0.12)",
     icon: "✕",
@@ -125,6 +125,7 @@ export function bandStyle(band: RiskBand): BandStyle {
 
 /** The four scoring components, with their maximums, for a breakdown bar chart. */
 export const ROUTE_LABELS: Record<RouteLabel, string> = {
+  alternative: "Alternative",
   safest: "Safest",
   balanced: "Balanced",
   fastest: "Fastest",
@@ -169,9 +170,9 @@ export const RISK_COMPONENTS: Array<{
 }> = [
   {
     key: "flood_exposure",
-    label: "Flood exposure",
+    label: "Warning / hazard exposure",
     max: 50,
-    explain: "Distance this route travels inside an active flood zone.",
+    explain: "Overlap with warning or hazard areas. NWS overlap does not confirm water on a road.",
   },
   {
     key: "low_lying",
@@ -189,7 +190,7 @@ export const RISK_COMPONENTS: Array<{
     key: "approach_margin",
     label: "Close approach",
     max: 5,
-    explain: "How closely the route skirts the edge of a flood zone.",
+    explain: "Proximity to warning or hazard boundaries, not measured water extent.",
   },
 ];
 

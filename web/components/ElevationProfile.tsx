@@ -247,7 +247,7 @@ export default function ElevationProfile({ route }: { route: RouteCandidate }) {
           {" · "}
           <span className="tabular">{Math.round(feet[hover])} ft</span>
           {flooded.has(hover) && (
-            <span style={{ color: "var(--status-critical)" }}> · flooded</span>
+            <span style={{ color: "var(--status-critical)" }}> · warning / hazard overlap</span>
           )}
         </div>
       )}
@@ -258,7 +258,7 @@ export default function ElevationProfile({ route }: { route: RouteCandidate }) {
             className="mr-1 inline-block h-2 w-2 rounded-sm align-middle"
             style={{ background: "#d03b3b", opacity: 0.5 }}
           />
-          Shaded stretches cross active floodwater.
+          Shaded stretches intersect warning / hazard areas, not necessarily flooded roads.
         </p>
       )}
     </div>

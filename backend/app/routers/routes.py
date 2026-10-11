@@ -4,7 +4,6 @@ Flow: ask ORS for several candidates, then score every one of them ourselves in
 PostGIS and rank. Never assume ORS honoured an avoid polygon.
 """
 
-import asyncio
 import json
 import logging
 import math
@@ -21,6 +20,7 @@ from ..models import (
     LatLng,
     RouteCandidate,
     RouteLabel,
+    RiskBand,
     RoutePreference,
     RouteRequest,
     RouteResponse,
@@ -75,49 +75,63 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
 
     zone_count = await avoid_set_svc.count_active_zones(conn)
 
-    straight_km = _haversine_km(req.origin, req.destination)
-    avoidance_allowed = straight_km <= settings.max_route_km_with_avoidance
-    if not avoidance_allowed:
-        warnings.append(
-            f"Trip is ~{straight_km:.0f} km; the routing service cannot apply flood "
-            f"avoidance above {settings.max_route_km_with_avoidance:.0f} km. Routes are "
-            "still scored and ranked by flood risk."
-        )
+    if zone_count and await avoid_set_svc.origin_in_warning(conn, req.origin):
+        warnings.append("The origin is inside an NWS warning area. Any departure begins inside that area, so complete warning-area avoidance may be impossible. This does not confirm flooded roads.")
 
-    # ---- build the avoid sets (cheap, one DB round-trip each) -------------- #
-    avoid_all = avoid_high = None
-    if avoidance_allowed and zone_count:
-        avoid_all = await avoid_set_svc.build(conn, req.origin, req.destination)
-        avoid_high = await avoid_set_svc.build(
-            conn, req.origin, req.destination, high_severity_only=True
-        )
-        warnings.extend(avoid_all.warnings)
+    # Establish a real baseline first, both for distance limits and snapping.
+    try:
+        baseline = await ors.directions(req.origin, req.destination, profile=req.profile, avoid_polygons=None)
+    except ors.ORSLocationError as exc:
+        return await _snap_proposal(req, exc)
+    except ors.ORSError as exc:
+        raise HTTPException(status_code=422 if isinstance(exc, ors.ORSNoRoute)
+                            else 503 if isinstance(exc, ors.ORSUnavailable) else 502,
+                            detail=str(exc)) from exc
+    plans = [(RouteLabel.FASTEST, None)]
+    results = [baseline]
+    calls = 1
+    stopped = False
+    search = req.preference != RoutePreference.FASTEST
+    # <=4 directions calls per user request; no retries, stop on quota/auth errors.
+    async def attempt(label, poly=None, **options):
+        nonlocal calls, stopped
+        if stopped or calls >= 4:
+            return
+        calls += 1
+        try:
+            if options.pop("alternatives", False):
+                found = await ors.alternatives(req.origin, req.destination, profile=req.profile)
+            else:
+                found = [await ors.directions(req.origin, req.destination, profile=req.profile,
+                                              avoid_polygons=poly, **options)]
+            for route in found:
+                if route.distance_m > baseline.distance_m * 1.75 or route.duration_s > baseline.duration_s * 2:
+                    warnings.append("A detour was excluded because it exceeded the distance/time budget.")
+                    continue
+                plans.append((label, poly))
+                results.append(route)
+        except ors.ORSError as exc:
+            warnings.append(f"Alternative search: {exc}")
+            stopped = isinstance(exc, (ors.ORSRateLimited, ors.ORSCredentialsError, ors.ORSAccessDenied))
 
-    # ---- propose: one ORS call per candidate ------------------------------- #
-    plans: list[tuple[RouteLabel, dict | None]] = [(RouteLabel.FASTEST, None)]
-    if avoid_all and avoid_all.geojson:
-        plans.append((RouteLabel.SAFEST, avoid_all.geojson))
-    if (
-        avoid_high
-        and avoid_high.geojson
-        and avoid_all
-        and avoid_high.geojson != avoid_all.geojson
-    ):
-        plans.append((RouteLabel.BALANCED, avoid_high.geojson))
-
-    results = await asyncio.gather(
-        *(
-            ors.directions(
-                req.origin, req.destination, profile=req.profile, avoid_polygons=poly
-            )
-            for _, poly in plans
-        ),
-        return_exceptions=True,
-    )
+    if search:
+        if baseline.distance_m < 100_000:
+            await attempt(RouteLabel.ALTERNATIVE, alternatives=True)
+        elif req.profile == "driving-car":
+            warnings.append("Trip exceeds the 100 km ORS alternative-route limit. Evaluating bounded shortest-road and highway-avoidance routes instead; this is not an exhaustive search.")
+            await attempt(RouteLabel.ALTERNATIVE, preference="shortest")
+            await attempt(RouteLabel.ALTERNATIVE, avoid_features=["highways"])
+    if zone_count and baseline.distance_m <= settings.max_route_km_with_avoidance * 1000:
+        avoid = await avoid_set_svc.build(conn, req.origin, req.destination)
+        warnings.extend(avoid.warnings)
+        if avoid.geojson:
+            await attempt(RouteLabel.ALTERNATIVE, avoid.geojson)
+    elif zone_count:
+        warnings.append("Trip exceeds the provider's 150 km area-avoidance limit; all returned routes are still flood-risk assessed.")
 
     # ---- dispose: score every candidate ourselves -------------------------- #
     candidates: list[RouteCandidate] = []
-    seen: set[tuple[int, int]] = set()
+    seen: list[ors.RouteResult] = []
 
     for (label, poly), result in zip(plans, results, strict=True):
         if isinstance(result, ors.ORSUnavailable):
@@ -136,11 +150,9 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
 
         # Collapse candidates that came back effectively identical — common when
         # ORS ignores the avoid polygon entirely.
-        key = (int(result.distance_m / 50), int(result.duration_s / 30))
-        if key in seen:
-            log.info("%s route is a duplicate of an earlier candidate", label.value)
+        if any(_same_corridor(result, prior) for prior in seen):
             continue
-        seen.add(key)
+        seen.append(result)
 
         assessment = await risk.assess(conn, result.geometry)
 
@@ -189,6 +201,13 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
         )
 
     recommended = _recommend(candidates, req.preference)
+    baseline_score = candidates[next(i for i, c in enumerate(candidates) if c.label == RouteLabel.FASTEST)].risk_score
+    lower_found = any(c.risk_score < baseline_score and c.risk_band != RiskBand.DANGEROUS for c in candidates)
+    no_lower = search and not lower_found
+    if no_lower:
+        warnings.append("No lower-risk route found")
+    if recommended is None:
+        warnings.append("Evaluated routes are for information only, not safe navigation guidance. Avoid travel through floodwater; consider delaying travel.")
     request_id = uuid4()
 
     await _persist(conn, request_id, req, recommended)
@@ -199,13 +218,35 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
         routes=candidates,
         recommended_id=recommended.id if recommended else None,
         flood_zones_considered=zone_count,
+        no_lower_risk_route_found=no_lower,
         warnings=warnings,
     )
+
+
+def _same_corridor(a: ors.RouteResult, b: ors.RouteResult) -> bool:
+    """Compare sampled route geometry, never distance/time buckets alone."""
+    def samples(route):
+        coords = route.geometry.coordinates
+        lengths = [0.0]
+        for p, q in zip(coords, coords[1:]):
+            lengths.append(lengths[-1] + ors.distance_m(LatLng(lon=p[0], lat=p[1]), LatLng(lon=q[0], lat=q[1])))
+        out = []
+        j = 1
+        for i in range(33):
+            target = lengths[-1] * i / 32
+            while j < len(coords)-1 and lengths[j] < target:
+                j += 1
+            fraction = (target-lengths[j-1]) / (lengths[j]-lengths[j-1] or 1)
+            out.append(LatLng(lon=coords[j-1][0]+fraction*(coords[j][0]-coords[j-1][0]),
+                              lat=coords[j-1][1]+fraction*(coords[j][1]-coords[j-1][1])))
+        return out
+    return sum(ors.distance_m(p,q) < 100 for p,q in zip(samples(a),samples(b))) >= 30
 
 
 def _recommend(
     candidates: list[RouteCandidate], preference: RoutePreference
 ) -> RouteCandidate | None:
+    candidates = [c for c in candidates if c.risk_band != RiskBand.DANGEROUS]
     if not candidates:
         return None
 

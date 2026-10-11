@@ -113,3 +113,9 @@ async def test_houston_success_still_returns_provider_geometry(monkeypatch):
     result=await routes._plan(None,RouteRequest(origin=LatLng(lat=29.7604,lon=-95.3698),destination=LatLng(lat=29.7634,lon=-95.3698)))
     assert len(result.routes)==1
     assert result.routes[0].geometry==geometry
+
+
+@pytest.fixture(autouse=True)
+def isolate_candidate_search(monkeypatch):
+    monkeypatch.setattr(ors, "alternatives", AsyncMock(return_value=[]))
+    monkeypatch.setattr(avoid_set, "origin_in_warning", AsyncMock(return_value=False))

@@ -202,3 +202,12 @@ def severity_from_text(value: str | None) -> FloodSeverity:
         return FloodSeverity(value.lower())
     except ValueError:
         return FloodSeverity.UNKNOWN
+
+
+async def origin_in_warning(conn: asyncpg.Connection, origin: LatLng) -> bool:
+    return bool(await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM flood_zones WHERE source = 'nws' "
+        "AND (expires IS NULL OR expires > now()) "
+        "AND ST_Covers(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326)))",
+        origin.lon, origin.lat,
+    ))

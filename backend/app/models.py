@@ -66,6 +66,7 @@ class FloodSeverity(str, Enum):
 
 
 class RouteLabel(str, Enum):
+    ALTERNATIVE = "alternative"
     FASTEST = "fastest"
     BALANCED = "balanced"
     SAFEST = "safest"
@@ -139,6 +140,8 @@ class FloodReport(BaseModel):
 
 
 class FlaggedSegment(BaseModel):
+    source: str = "unknown"
+    evidence: Literal["warning_area", "hazard_area"] = "hazard_area"
     """A stretch of route that intersects a flood zone. The map paints these red."""
 
     geometry: LineString
@@ -212,6 +215,7 @@ class RouteRequest(BaseModel):
 
 
 class RouteResponse(BaseModel):
+    no_lower_risk_route_found: bool = False
     snap_proposals: list[SnapProposal] = Field(default_factory=list)
     accepted_snaps: list[SnapConfirmation] = Field(default_factory=list)
     request_id: UUID
