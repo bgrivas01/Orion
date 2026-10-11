@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-map-worker.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "check:charts": "tsx scripts/render-check.tsx"
+    "check:charts": "tsx scripts/render-check.tsx",
+    "prebuild": "node scripts/copy-map-worker.mjs"
   },
   "dependencies": {
     "maplibre-gl": "^6.13.0",
