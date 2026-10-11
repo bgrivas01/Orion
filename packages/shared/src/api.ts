@@ -445,6 +445,40 @@ export interface components {
         };
         /** RouteCandidate */
         RouteCandidate: {
+            /**
+             * Warning Exposure M
+             * @default 0
+             */
+            warning_exposure_m: number;
+            /**
+             * Warning Exposure Percent
+             * @default 0
+             */
+            warning_exposure_percent: number;
+            /** Warning Severity M */
+            warning_severity_m?: {
+                [key: string]: number;
+            };
+            /**
+             * Hazard Exposure M
+             * @default 0
+             */
+            hazard_exposure_m: number;
+            /**
+             * Initial Warning Exit M
+             * @default 0
+             */
+            initial_warning_exit_m: number;
+            /**
+             * Warning Reentries
+             * @default 0
+             */
+            warning_reentries: number;
+            /**
+             * Warning Avoidance Achieved
+             * @default false
+             */
+            warning_avoidance_achieved: boolean;
             /** Id */
             id: string;
             label: components["schemas"]["RouteLabel"];
@@ -476,7 +510,7 @@ export interface components {
             elevation_profile: components["schemas"]["ElevationPoint"][];
             /**
              * Avoidance Requested
-             * @description Whether we asked ORS to avoid flood polygons for this candidate.
+             * @description Whether polygon avoidance or hazard-weighted road routing was requested.
              * @default false
              */
             avoidance_requested: boolean;

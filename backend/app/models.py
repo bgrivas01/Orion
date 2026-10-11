@@ -167,6 +167,13 @@ class ElevationPoint(BaseModel):
 
 
 class RouteCandidate(BaseModel):
+    warning_exposure_m: float = Field(0, ge=0)
+    warning_exposure_percent: float = Field(0, ge=0, le=100)
+    warning_severity_m: dict[str, float] = Field(default_factory=dict)
+    hazard_exposure_m: float = Field(0, ge=0)
+    initial_warning_exit_m: float = Field(0, ge=0)
+    warning_reentries: int = Field(0, ge=0)
+    warning_avoidance_achieved: bool = False
     id: str
     label: RouteLabel
     geometry: LineString
@@ -180,7 +187,7 @@ class RouteCandidate(BaseModel):
     max_elevation_m: float | None = None
     elevation_profile: list[ElevationPoint] = []
     avoidance_requested: bool = Field(
-        False, description="Whether we asked ORS to avoid flood polygons for this candidate."
+          False, description="Whether polygon avoidance or hazard-weighted road routing was requested."
     )
     avoidance_verified: bool = Field(
         False,

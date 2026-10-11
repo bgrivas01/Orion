@@ -66,7 +66,7 @@ export interface BandStyle {
  */
 export const RISK_BANDS: Record<RiskBand, BandStyle> = {
   safe: {
-    label: "Safe",
+    label: "Lower assessed risk",
     blurb: "Lower assessed risk, not a guarantee of road safety.",
     mark: "#0ca30c",
     bg: "rgba(12, 163, 12, 0.10)",
@@ -243,7 +243,9 @@ export function orderRoutes(res: RouteResponse): RouteCandidate[] {
 }
 
 export function totalFloodedMeters(route: RouteCandidate): number {
-  return (route.flagged_segments ?? []).reduce((sum, s) => sum + s.length_m, 0);
+  // Compatibility helper: unique warning distance, never a sum of overlapping
+  // warning and hazard evidence. It does not represent confirmed floodwater.
+  return route.warning_exposure_m ?? 0;
 }
 
 /* -------------------------------------------------------------------------- */
