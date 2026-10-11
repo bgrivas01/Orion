@@ -101,3 +101,19 @@
  .orion-map { height:540px; }
  .orion-route-cards { grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
 }
+/* Home-only score restoration; other screens retain their existing styles. */
+.home-flood-indicator .score-ring { width:208px; height:208px; }
+.home-flood-indicator .home-score-unavailable { font-size:22px; max-width:150px; margin:auto; }
+.home-flood-indicator[data-concern="Low Concern"] .ring-value { stroke:var(--safe); }
+.home-flood-indicator[data-concern="Low Concern"] .risk-chip { color:var(--safe); background:var(--card); }
+.home-flood-indicator[data-concern="High Concern"] .ring-value { stroke:var(--danger); }
+.home-flood-indicator[data-concern="High Concern"] .risk-chip { color:var(--danger); background:var(--danger-surface); }
+.home-flood-indicator > section, .home-flood-indicator > a { margin-top:20px; }
+.home-flood-indicator .home-connection .orion-status { margin-bottom:0; }
+@media(min-width:900px) {
+ .home-flood-indicator .score-ring { width:260px; height:260px; }
+ .home-flood-indicator .score-number .home-score-unavailable { font-size:26px; max-width:180px; }
+ .home-flood-indicator > .home-current-warnings { grid-column:2; margin-top:0; }
+ .home-flood-indicator > .home-score-explanation { grid-column:2; }
+ .home-flood-indicator > .home-map-link, .home-flood-indicator > .home-plan-link { grid-column:1/-1; margin-top:0; }
+}
