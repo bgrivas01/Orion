@@ -114,7 +114,7 @@ export default function Home() {
     <main className="flex h-screen flex-col lg:flex-row">
       {/* ----------------------------------------------------------- panel -- */}
       <aside
-        className="order-2 flex w-full shrink-0 flex-col overflow-y-auto lg:order-1 lg:h-full lg:w-[380px]"
+        className="order-2 flex min-h-0 w-full flex-col overflow-y-auto lg:order-1 lg:h-full lg:w-[380px] lg:shrink-0"
         style={{ background: "var(--page)", borderRight: "1px solid var(--border)" }}
       >
         <header className="px-4 pb-3 pt-4">
@@ -245,7 +245,7 @@ export default function Home() {
       </aside>
 
       {/* ------------------------------------------------------------- map -- */}
-      <div className="order-1 h-[45vh] w-full lg:order-2 lg:h-full lg:flex-1">
+      <div className="order-1 h-[45vh] w-full shrink-0 lg:order-2 lg:h-full lg:flex-1">
         <MapView
           routes={routes}
           selectedId={selectedId}
