@@ -1,11 +1,11 @@
 """Liveness + dependency check. First thing to hit when something looks wrong."""
 
-import httpx
 from fastapi import APIRouter
 
 from .. import db
 from ..config import get_settings
-from ..models import HealthResponse
+from ..models import HealthResponse, LatLng
+from ..services import ors as ors_client
 
 router = APIRouter(tags=["health"])
 
@@ -44,13 +44,16 @@ async def health() -> HealthResponse:
         details.append("ORS_API_KEY not configured")
     else:
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get(
-                    f"{settings.ors_base_url}/v2/health",
-                )
-                ors = r.status_code < 500
-        except Exception as exc:  # noqa: BLE001
-            details.append(f"ors unreachable: {exc}")
+            # The public API does not expose /v2/health. Exercise both services
+            # with a small fixed query; this consumes normal API quota.
+            await ors_client.directions(
+                LatLng(lat=29.7604, lon=-95.3698),
+                LatLng(lat=29.7634, lon=-95.3698),
+            )
+            await ors_client.geocode("Houston", limit=1)
+            ors = True
+        except ors_client.ORSError as exc:
+            details.append(str(exc))
 
     ok = database and ors and postgis
     return HealthResponse(

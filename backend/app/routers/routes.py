@@ -105,7 +105,7 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
 
     for (label, poly), result in zip(plans, results, strict=True):
         if isinstance(result, ors.ORSUnavailable):
-            warnings.append(f"Routing service unavailable for the {label.value} route.")
+            warnings.append(f"Routing service unavailable for the {label.value} route: {result}")
             log.warning("ORS unavailable for %s: %s", label.value, result)
             continue
         if isinstance(result, BaseException):
@@ -152,7 +152,7 @@ async def _plan(conn: asyncpg.Connection, req: RouteRequest) -> RouteResponse:
 
     if not candidates:
         raise HTTPException(
-            status_code=502,
+            status_code=503 if all(isinstance(r, ors.ORSUnavailable) for r in results) else 502,
             detail="No route could be computed. " + (" ".join(warnings) or ""),
         )
 
@@ -251,6 +251,8 @@ async def _unscored_fallback(req: RouteRequest) -> RouteResponse:
 
     try:
         result = await ors.directions(req.origin, req.destination, profile=req.profile)
+    except ors.ORSUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ors.ORSError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
